@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 
-from agent.llm import MockLLM
+from agent.llm import DeepSeekLLM, MockLLM
 from agent.runtime import AgentRuntime
 from agent.session import SessionBusyError, SessionManager, SessionNotFoundError
 from agent.tools import get_all_tools
@@ -52,7 +52,13 @@ app.add_middleware(
 )
 
 manager = SessionManager()
-runtime = AgentRuntime(llm=MockLLM(), max_rounds=8)
+
+# LLM 后端切换：LLM_BACKEND=deepseek 走真实 DeepSeek，默认 mock 保证测试与演示稳定
+backend = os.environ.get("LLM_BACKEND", "mock")
+if backend == "deepseek":
+    runtime = AgentRuntime(llm=DeepSeekLLM().init(), max_rounds=8)
+else:
+    runtime = AgentRuntime(llm=MockLLM(), max_rounds=8)
 
 
 class ChatRequest(BaseModel):
@@ -80,7 +86,20 @@ def create_session() -> dict:
 
 @app.get("/api/sessions", tags=["session"])
 def list_sessions() -> dict:
-    return {"sessions": [_session_dict(s) for s in manager.list()]}
+    sessions = manager.list()
+    if not sessions:
+        # 惰性默认会话：列表为空时自动新建，前端打开即有一个可用会话
+        manager.create()
+        sessions = manager.list()
+    return {"sessions": [_session_dict(s) for s in sessions]}
+
+
+@app.delete("/api/sessions/{session_id}", tags=["session"], status_code=204)
+def delete_session(session_id: str) -> None:
+    try:
+        manager.remove(session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="会话不存在")
 
 
 @app.get("/api/sessions/{session_id}/messages", tags=["session"])

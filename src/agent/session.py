@@ -46,5 +46,11 @@ class SessionManager:
     def list(self) -> list[Session]:
         return sorted(self._sessions.values(), key=lambda s: s.created_at, reverse=True)
 
+    def remove(self, session_id: str) -> None:
+        """删除会话；不存在时抛 SessionNotFoundError。"""
+        if session_id not in self._sessions:
+            raise SessionNotFoundError(f"会话不存在: {session_id}")
+        del self._sessions[session_id]
+
     def append_trace(self, session: Session, trace: list[dict]) -> None:
         session.traces.extend(trace)
