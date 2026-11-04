@@ -11,3 +11,6 @@ __pycache__/
 # Node / Vite 前端
 node_modules/
 dist/
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
