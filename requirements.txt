@@ -6,3 +6,4 @@ pytest
 httpx
 openai
 python-dotenv
+beautifulsoup4
