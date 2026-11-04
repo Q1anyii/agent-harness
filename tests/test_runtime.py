@@ -117,6 +117,10 @@ class MultiToolLLM(LLMClient):
     def __init__(self) -> None:
         self._decided = False
 
+    def init(self) -> None:
+        """无外部客户端，无需初始化。"""
+        return None
+
     def generate(self, messages: list[dict]) -> LLMResponse:
         if not self._decided:
             self._decided = True

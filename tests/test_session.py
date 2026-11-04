@@ -45,3 +45,20 @@ def test_append_trace():
     s = mgr.create()
     mgr.append_trace(s, [{"tool": "calculator", "result": "ok"}])
     assert len(s.traces) == 1
+
+
+def test_remove_session():
+    """删除会话：目标消失、其余会话不受影响。"""
+    mgr = SessionManager()
+    a = mgr.create()
+    b = mgr.create()
+    mgr.remove(a.session_id)
+    assert [s.session_id for s in mgr.list()] == [b.session_id]
+    with pytest.raises(SessionNotFoundError):
+        mgr.get(a.session_id)
+
+
+def test_remove_missing_session_raises():
+    mgr = SessionManager()
+    with pytest.raises(SessionNotFoundError):
+        mgr.remove("no_such_id")

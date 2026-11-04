@@ -40,6 +40,31 @@ def test_list_sessions():
     assert isinstance(r.json()["sessions"], list)
 
 
+def test_list_sessions_auto_creates_default():
+    """会话列表为空时，GET 自动新建一个默认会话（打开前端即可用）。"""
+    for s in manager.list():
+        manager.remove(s.session_id)
+    r = client.get("/api/sessions")
+    assert r.status_code == 200
+    sessions = r.json()["sessions"]
+    assert len(sessions) == 1
+    assert sessions[0]["message_count"] == 0
+
+
+def test_delete_session_204_and_removed():
+    """删除会话：204 且目标随即不可访问。"""
+    sid = client.post("/api/sessions").json()["session_id"]
+    r = client.delete(f"/api/sessions/{sid}")
+    assert r.status_code == 204
+    r2 = client.get(f"/api/sessions/{sid}/messages")
+    assert r2.status_code == 404
+
+
+def test_delete_unknown_session_404():
+    r = client.delete("/api/sessions/no_such_id")
+    assert r.status_code == 404
+
+
 # ---------- 消息（正常路径） ----------
 
 def test_send_plain_message():
