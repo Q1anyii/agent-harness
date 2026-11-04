@@ -1,39 +1,71 @@
-"""搜索工具（mock）：基于内置知识库的关键词检索。"""
+"""搜索工具（联网）：DuckDuckGo HTML 版 + BeautifulSoup 解析搜索结果，无需 key。
+
+架构说明：
+- _fetch() 独立成模块级函数，便于测试 monkeypatch（保持离线确定性）。
+- 网络/解析失败一律兜底返回错误文案，不让工具级异常阻断 Agent 循环。
+"""
 from __future__ import annotations
+
+import httpx
+from bs4 import BeautifulSoup
 
 from .base import Tool, register
 
-_MOCK_KB: dict[str, str] = {
-    "agent": "Agent 是由大模型驱动、能自主调用工具完成任务的系统，核心是「感知-决策-行动」循环。",
-    "rag": "RAG（检索增强生成）通过向量检索召回相关知识片段拼入提示词，缓解幻觉与知识时效问题。",
-    "mitta": "Mitta 是作者自研的 AI 智能助理项目，采用 LangGraph + RAG + Agent 架构。",
-    "langgraph": "LangGraph 以图结构组织 Agent 的节点与状态，支持循环、分支与人工介入。",
-    "mem0": "Mem0 是长期记忆框架，用向量库存储用户事实，在生成前做记忆召回。",
-    "python": "Python 是 agent-harness 项目的实现语言，理由：简单且作者最熟悉。",
-    "fastapi": "FastAPI 是 agent-harness 的 Web 层框架，提供会话、消息与 trace 等 HTTP API。",
-    "context": "上下文管理包含：单次问答工具轮次上限、短期记忆窗口、context 压缩（截断或摘要）。",
-}
+_TIMEOUT_SECONDS = 10.0
+_MAX_RESULTS = 5
 
-_SUPPORTED = "、".join(sorted(_MOCK_KB))
+
+def _fetch(query: str) -> list[dict] | None:
+    """抓取 DuckDuckGo HTML 搜索结果，解析出 标题/摘要；失败/超时返回 None。"""
+    try:
+        resp = httpx.get(
+            f"https://html.duckduckgo.com/html/?q={query}",
+            timeout=_TIMEOUT_SECONDS,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        resp.raise_for_status()
+    except httpx.HTTPError:
+        return None
+
+    # 用 BeautifulSoup 解析：.result__a 是结果标题（含链接），.result__snippet 是摘要
+    soup = BeautifulSoup(resp.text, "html.parser")
+    results = []
+    for link in soup.select(".result__a")[:_MAX_RESULTS]:
+        title = link.get_text(" ", strip=True)
+        snippet_el = link.find_next(class_="result__snippet")
+        snippet = snippet_el.get_text(" ", strip=True) if snippet_el else ""
+        results.append({"title": title, "snippet": snippet})
+    return results or None
 
 
 def run(query: str) -> str:
+    # 1) 参数校验：空关键词直接报错
     if query is None or not str(query).strip():
         return "错误：搜索关键词为空"
-    text = str(query).strip().lower()
-    for keyword, answer in _MOCK_KB.items():
-        if keyword in text:
-            return f"搜索结果（mock）：{answer}"
-    return f"搜索结果（mock）：未找到与「{query}」直接相关的内容，试试关键词：{_SUPPORTED}。"
+    text = str(query).strip()
+
+    # 2) 联网搜索：空列表或 None 都视为无结果
+    results = _fetch(text)
+    if not results:
+        return f"搜索结果（联网）：未找到与「{text}」相关的内容，或网络暂时不可用"
+
+    # 3) 组装文本：最多展示前 N 条 标题+摘要
+    lines = [f"搜索结果（联网）：「{text}」"]
+    for i, r in enumerate(results, 1):
+        line = f"{i}. {r['title']}"
+        if r["snippet"]:
+            line += f" —— {r['snippet']}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 register(Tool(
     name="search",
-    description="搜索内置知识库（mock），返回与关键词相关的内容。",
+    description="联网搜索（数据源 DuckDuckGo），返回相关网页标题与摘要。",
     parameters={
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "搜索关键词，例如 agent、rag、fastapi"},
+            "query": {"type": "string", "description": "搜索关键词，例如 agent、langgraph"},
         },
         "required": ["query"],
     },

@@ -64,14 +64,16 @@ def test_calculator_ast_injection_blocked():
         evaluate("open('README.md').read()")
 
 
-# ---------- search (mock) ----------
+# ---------- search (联网) ----------
 
 def test_search_normal_hit():
     result = search_run("介绍一下 RAG")
-    assert "搜索结果（mock）" in result and "RAG" in result
+    assert "搜索结果（联网）" in result and "RAG" in result
 
 
-def test_search_no_hit_fallback():
+def test_search_no_hit_fallback(monkeypatch):
+    """联网无结果/网络失败时兜底返回未找到文案。"""
+    monkeypatch.setattr("agent.tools.search._fetch", lambda query: None)
     result = search_run("量子计算")
     assert "未找到" in result
 
@@ -85,16 +87,18 @@ def test_search_case_insensitive():
     assert "搜索结果" in search_run("LangGraph")
 
 
-# ---------- weather (mock) ----------
+# ---------- weather (联网) ----------
 
 def test_weather_normal():
     result = weather_run("北京")
     assert "北京" in result and "℃" in result
 
 
-def test_weather_unknown_city():
+def test_weather_failure_fallback(monkeypatch):
+    """联网失败时兜底返回异常文案（对应原 mock 的未知城市场景）。"""
+    monkeypatch.setattr("agent.tools.weather._fetch", lambda city: None)
     result = weather_run("火星")
-    assert "暂未收录" in result
+    assert "暂时无法获取" in result
 
 
 @pytest.mark.parametrize("bad", [None, "", "  "])
