@@ -163,6 +163,11 @@ body {
   justify-content: flex-end;
 }
 
+/* 对调用户消息内部顺序：内容在前（左），"用户"标签在后（右） */
+.msg-user .msg-content {
+  order: -1;
+}
+
 .msg-label {
   flex-shrink: 0;
   font-size: 12px;
