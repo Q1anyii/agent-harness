@@ -13,7 +13,7 @@ from agent.tools import get_tool
 class AgentResult:
     reply: str
     trace: list[dict]
-    rounds_used: int
+    rounds_used: int  # 工具调用次数：最近一条 user 消息之后实际执行的工具条数
     max_rounds: int
 
 
@@ -38,12 +38,10 @@ class AgentRuntime:
             messages: list[dict] = list(session.messages)
             messages.append({"role": "user", "content": user_content})
             trace: list[dict] = []
-            rounds_used = 0
 
             for _ in range(self.max_rounds):
                 response: LLMResponse = self.llm.generate(messages)
                 if response.tool_calls:
-                    rounds_used += 1
                     for call in response.tool_calls:
                         item = self._execute_tool(call.name, call.args)
                         trace.append(item)
@@ -59,10 +57,17 @@ class AgentRuntime:
             messages.append({"role": "assistant", "content": reply})
             session.messages = messages
             session.traces.extend(trace)
+
+            # 工具调用次数 = 最近一条 user 消息之后出现的 tool 消息数，
+            # 即本次问答实际执行的工具条数（历史会话中的工具调用不计入）。
+            last_user_idx = max(i for i, m in enumerate(messages) if m.get("role") == "user")
+            tool_calls_used = sum(
+                1 for m in messages[last_user_idx + 1:] if m.get("role") == "tool"
+            )
             return AgentResult(
                 reply=reply,
                 trace=trace,
-                rounds_used=rounds_used,
+                rounds_used=tool_calls_used,
                 max_rounds=self.max_rounds,
             )
         finally:
