@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
+import { storage } from './storage'
 import type { ChatMessage, SessionInfo, TraceItem } from './types'
 import SessionList from './components/SessionList'
 import ChatBox from './components/ChatBox'
@@ -48,20 +49,35 @@ export default function App() {
   }
 
   const selectSession = async (sid: string) => {
+    setCurrentId(sid)
+    setError(null)
+    // 先渲染本地缓存（后端重启/刷新页面时历史不丢），再以后端为准刷新
+    const cachedMsgs = storage.loadMessages(sid)
+    const cachedTr = storage.loadTrace(sid)
+    if (cachedMsgs) setMessages(cachedMsgs)
+    if (cachedTr) setTrace(cachedTr)
     try {
-      setCurrentId(sid)
-      setError(null)
       const [msgs, tr] = await Promise.all([api.getMessages(sid), api.getTrace(sid)])
       setMessages(msgs.messages)
       setTrace(tr.trace)
+      storage.saveMessages(sid, msgs.messages)
+      storage.saveTrace(sid, tr.trace)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('404') || msg.includes('会话不存在')) {
+        // 后端已无此会话（如服务重启）：保留本地缓存展示，发送时自动新建
+        setError('该会话在后端已失效，当前展示本地缓存历史；发送消息将自动新建会话')
+      } else {
+        setError(msg)
+      }
     }
   }
 
   const deleteSession = async (sid: string) => {
     try {
       await api.deleteSession(sid)
+      storage.removeMessages(sid)
+      storage.removeTrace(sid)
       if (currentId === sid) {
         setCurrentId(null)
         setMessages([])
@@ -83,11 +99,30 @@ export default function App() {
     setInput('')
     try {
       const result = await api.sendMessage(currentId, content)
-      setMessages((prev) => [...prev, { role: 'assistant', content: result.reply }])
-      setTrace((prev) => [...prev, ...result.trace])
+      setMessages((prev) => {
+        const next: ChatMessage[] = [...prev, { role: 'assistant', content: result.reply }]
+        storage.saveMessages(currentId, next)
+        return next
+      })
+      setTrace((prev) => {
+        const next = [...prev, ...result.trace]
+        storage.saveTrace(currentId, next)
+        return next
+      })
       void refreshSessions()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('404') || msg.includes('会话不存在')) {
+        // 后端已无此会话（如服务重启）：自动新建会话，避免旧 id 持续失效
+        const s = await api.createSession()
+        setCurrentId(s.session_id)
+        setMessages([])
+        setTrace([])
+        setError('原会话已失效，已自动新建会话')
+        void refreshSessions()
+      } else {
+        setError(msg)
+      }
     } finally {
       setBusy(false)
     }
