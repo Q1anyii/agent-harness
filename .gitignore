@@ -1,2 +1,12 @@
 # IDE 本地配置
 .idea/
+.env
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Node / Vite 前端
+node_modules/
+dist/
