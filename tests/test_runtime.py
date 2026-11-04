@@ -134,6 +134,16 @@ class MultiToolLLM(LLMClient):
         return LLMResponse(content="全部完成", tool_calls=None)
 
 
+def test_todo_tool_call_via_mock_route():
+    """MockLLM 路由到 todo 工具并执行：添加待办闭环（联网工具测试离线确定）。"""
+    mgr = SessionManager()
+    s = _new_session(mgr)
+    result = _make_runtime().run(s, "添加待办：买牛奶")
+    assert result.trace[0]["tool"] == "todo"
+    assert "已添加待办：买牛奶" in result.trace[0]["result"]
+    assert result.rounds_used == 1
+
+
 def test_rounds_used_counts_tool_calls_not_decision_rounds():
     """一次决策返回多个工具时，rounds_used 应等于工具条数（2），而非决策轮数。"""
     mgr = SessionManager()

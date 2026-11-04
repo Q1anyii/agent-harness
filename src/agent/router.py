@@ -8,6 +8,7 @@ _TOOL_TRIGGERS: dict[str, list[str]] = {
     "calculator": ["计算", "算一下", "等于多少", "算算", "calculator", "算一算", "算下"],
     "search": ["搜索", "查一下", "搜一下", "查找", "介绍一下", "search", "是什么", "什么是"],
     "weather": ["天气", "气温", "多少度", "下雨", "weather", "温度"],
+    "todo": ["待办", "todo", "提醒我", "记一下", "待办事项", "to-do"],
 }
 
 _STRIP_PATTERNS: list[str] = [
@@ -57,4 +58,16 @@ def extract_args(tool_name: str, query: str) -> dict[str, str]:
         # 常见城市限定 2~4 个中文字符，超出则整体截断到 6 字
         city = city[:6] if len(city) <= 6 else city[:6]
         return {"city": city or text}
+    if tool_name == "todo":
+        # 按语气词判断动作：添加/完成 关键词在前，其余视为查看
+        cleaned = _strip_noise(text, tool_name)
+        if any(k in cleaned for k in ("添加", "新增", "记下", "记录", "加个")):
+            for k in ("添加", "新增", "记下", "记录", "加个", "：", ":"):
+                cleaned = cleaned.replace(k, "")
+            return {"action": "add", "text": cleaned.strip(" ，")}
+        if any(k in cleaned for k in ("完成", "搞定", "勾掉", "打个勾")):
+            for k in ("完成", "搞定", "勾掉", "打个勾", "：", ":"):
+                cleaned = cleaned.replace(k, "")
+            return {"action": "done", "text": cleaned.strip(" ，")}
+        return {"action": "list", "text": cleaned}
     return {}
