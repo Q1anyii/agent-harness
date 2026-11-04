@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.llm import MockLLM
+from agent.llm import LLMClient, LLMResponse, MockLLM, ToolCall
 from agent.runtime import AgentRuntime
 from agent.session import Session, SessionBusyError, SessionManager
 
@@ -109,3 +109,44 @@ def test_multi_round_tool_loop_counted():
     result = runtime.run(s, "计算 1+2")
     assert result.rounds_used >= 1
     assert len(result.trace) == result.rounds_used
+
+
+class MultiToolLLM(LLMClient):
+    """一次决策返回多个工具调用，用于验证 rounds_used 按工具条数统计。"""
+
+    def __init__(self) -> None:
+        self._decided = False
+
+    def generate(self, messages: list[dict]) -> LLMResponse:
+        if not self._decided:
+            self._decided = True
+            return LLMResponse(
+                content=None,
+                tool_calls=[
+                    ToolCall(name="calculator", args={"expression": "1+1"}),
+                    ToolCall(name="weather", args={"city": "北京"}),
+                ],
+            )
+        return LLMResponse(content="全部完成", tool_calls=None)
+
+
+def test_rounds_used_counts_tool_calls_not_decision_rounds():
+    """一次决策返回多个工具时，rounds_used 应等于工具条数（2），而非决策轮数。"""
+    mgr = SessionManager()
+    s = _new_session(mgr)
+    result = AgentRuntime(llm=MultiToolLLM()).run(s, "帮我计算 1+1 和查北京天气")
+    assert len(result.trace) == 2
+    assert result.rounds_used == 2
+
+
+def test_rounds_used_counts_only_latest_user_tools():
+    """多轮会话中，rounds_used 只统计最近一条 user 之后的工具调用，不跨轮累计。"""
+    mgr = SessionManager()
+    s = _new_session(mgr)
+    runtime = _make_runtime()
+    r1 = runtime.run(s, "帮我计算 1+2*3")
+    assert r1.rounds_used == 1
+    r2 = runtime.run(s, "你好")
+    assert r2.rounds_used == 0
+    r3 = runtime.run(s, "北京天气怎么样")
+    assert r3.rounds_used == 1  # 不是累计 2
