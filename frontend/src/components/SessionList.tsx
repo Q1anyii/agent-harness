@@ -5,9 +5,10 @@ interface Props {
   currentId: string | null
   onCreate: () => void
   onSelect: (sid: string) => void
+  onDelete: (sid: string) => void
 }
 
-export default function SessionList({ sessions, currentId, onCreate, onSelect }: Props) {
+export default function SessionList({ sessions, currentId, onCreate, onSelect, onDelete }: Props) {
   return (
     <div className="session-list">
       <button className="new-session" onClick={onCreate}>
@@ -15,7 +16,7 @@ export default function SessionList({ sessions, currentId, onCreate, onSelect }:
       </button>
       <ul>
         {sessions.map((s) => (
-          <li key={s.session_id}>
+          <li key={s.session_id} className="session-row">
             <button
               className={s.session_id === currentId ? 'session-item active' : 'session-item'}
               onClick={() => onSelect(s.session_id)}
@@ -27,9 +28,19 @@ export default function SessionList({ sessions, currentId, onCreate, onSelect }:
                 {s.state} · {s.message_count} 条
               </span>
             </button>
+            <button
+              className="session-del"
+              title="删除会话"
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete(s.session_id)
+              }}
+            >
+              ×
+            </button>
           </li>
         ))}
-        {sessions.length === 0 && <li className="session-empty">暂无会话，点击上方新建</li>}
+        {sessions.length === 0 && <li className="session-empty">暂无会话</li>}
       </ul>
     </div>
   )

@@ -27,6 +27,13 @@ export default function App() {
     void refreshSessions()
   }, [refreshSessions])
 
+  // 自动选中：当前无会话时，自动选中列表第一个（配合后端惰性建会话，打开即用）
+  useEffect(() => {
+    if (!currentId && sessions.length > 0) {
+      void selectSession(sessions[0].session_id)
+    }
+  }, [sessions, currentId])
+
   const createSession = async () => {
     try {
       const s = await api.createSession()
@@ -47,6 +54,21 @@ export default function App() {
       const [msgs, tr] = await Promise.all([api.getMessages(sid), api.getTrace(sid)])
       setMessages(msgs.messages)
       setTrace(tr.trace)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const deleteSession = async (sid: string) => {
+    try {
+      await api.deleteSession(sid)
+      if (currentId === sid) {
+        setCurrentId(null)
+        setMessages([])
+        setTrace([])
+      }
+      setError(null)
+      void refreshSessions()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -79,6 +101,7 @@ export default function App() {
           currentId={currentId}
           onCreate={createSession}
           onSelect={selectSession}
+          onDelete={deleteSession}
         />
       </aside>
       <main className="main">

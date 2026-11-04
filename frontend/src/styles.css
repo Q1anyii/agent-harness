@@ -46,11 +46,18 @@ body {
   flex: 1;
 }
 
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
 .session-item {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   padding: 8px 10px;
-  margin-bottom: 6px;
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -83,6 +90,24 @@ body {
   color: #8a919c;
   font-size: 13px;
   padding: 8px;
+}
+
+.session-del {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a919c;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.session-del:hover {
+  background: #f53f3f;
+  color: #fff;
 }
 
 .main {
@@ -131,6 +156,11 @@ body {
   display: flex;
   gap: 8px;
   align-items: flex-start;
+}
+
+/* 用户消息靠右，Agent/工具消息靠左 */
+.msg-user {
+  justify-content: flex-end;
 }
 
 .msg-label {
