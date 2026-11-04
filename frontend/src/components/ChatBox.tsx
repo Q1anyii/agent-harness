@@ -20,14 +20,14 @@ export default function ChatBox({ messages, input, busy, disabled, onInput, onSe
             <span className="msg-content">{m.content}</span>
           </div>
         ))}
-        {messages.length === 0 && <div className="chat-empty">请先新建会话，再输入消息。</div>}
+        {messages.length === 0 && <div className="chat-empty">输入消息，开始对话吧。</div>}
       </div>
       <div className="chat-input-row">
         <input
           className="chat-input"
           value={input}
           disabled={disabled || busy}
-          placeholder={disabled ? '请先新建会话' : busy ? 'Agent 处理中…' : '输入消息，回车发送'}
+          placeholder={disabled ? '加载会话中…' : busy ? 'Agent 处理中…' : '输入消息，回车发送'}
           onChange={(e) => onInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') onSend()

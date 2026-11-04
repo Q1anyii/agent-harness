@@ -10,6 +10,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const body = (await res.json().catch(() => null)) as { detail?: string } | null
     throw new Error(body?.detail ?? `HTTP ${res.status}`)
   }
+  if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
 }
 
@@ -17,6 +18,8 @@ export const api = {
   createSession: () => request<SessionInfo>('/api/sessions', { method: 'POST' }),
 
   listSessions: () => request<{ sessions: SessionInfo[] }>('/api/sessions'),
+
+  deleteSession: (sid: string) => request<void>(`/api/sessions/${sid}`, { method: 'DELETE' }),
 
   getMessages: (sid: string) =>
     request<{ messages: ChatMessage[] }>(`/api/sessions/${sid}/messages`),
