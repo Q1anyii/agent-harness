@@ -1,0 +1,49 @@
+# ============================================================
+# docker-compose.yml — agent-harness 一键部署（api + nginx）
+# 前置：cd frontend && npm install && npm run build（生成 frontend/dist/）
+# 启动：docker compose up -d --build
+# 访问：http://localhost（nginx 托管前端静态 + /api 反代到后端）
+# 停止：docker compose down
+# 日志：docker compose logs -f api
+# ============================================================
+
+version: "3.8"
+
+services:
+  # ==================== 后端 API ====================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-harness-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # 默认 Mock 模式零配置可跑；接真实 DeepSeek 时在宿主机 .env 配置后置 LLM_BACKEND=deepseek
+      # （docker compose 自动读取项目根 .env 作为变量来源）
+      LLM_BACKEND: ${LLM_BACKEND:-mock}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      BASE_URL: ${BASE_URL:-https://api.deepseek.com}
+      MODEL_NAME: ${MODEL_NAME:-deepseek-flash}
+    volumes:
+      # SQLite 持久化：容器内 /app/data/agent-harness.db 落宿主机 ./data
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ==================== 前端 Nginx（静态托管 + API 反代）====================
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: agent-harness-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - ./deploy/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
