@@ -228,6 +228,10 @@ def test_runtime_uuid_fallback_for_no_id():
                 )
             return LLMResponse(content="完成", tool_calls=None)
 
+        # async 抽象方法契约：纯 sync 逻辑（无 IO），直接复用 generate 即可
+        async def async_generate(self, messages: list[dict]) -> LLMResponse:
+            return self.generate(messages)
+
     mgr = SessionManager()
     s = mgr.create()
     result = AgentRuntime(llm=NoIdLLM()).run(s, "算 1+1")

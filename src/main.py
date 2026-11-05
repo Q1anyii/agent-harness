@@ -112,13 +112,13 @@ def get_messages(session_id: str) -> dict:
 
 
 @app.post("/api/sessions/{session_id}/messages", tags=["chat"])
-def send_message(session_id: str, req: ChatRequest) -> dict:
+async def send_message(session_id: str, req: ChatRequest) -> dict:
     try:
         s = manager.get(session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="会话不存在")
     try:
-        result = runtime.run(s, req.content)
+        result = await runtime.async_run(s, req.content)
     except SessionBusyError:
         raise HTTPException(status_code=409, detail="会话正忙，请稍后重试")
     return {
