@@ -1,4 +1,4 @@
-import type { AiBlock, ChatMessage, ToolCallBlock } from '../types'
+import type { AiBlock, AiSegment, ChatMessage } from '../types'
 import AiMessageBox from './AiMessageBox'
 
 interface Props {
@@ -15,56 +15,76 @@ export interface RenderItem {
   key: number
   role: 'user' | 'assistant'
   content: string
-  toolCalls: ToolCallBlock[]
+  segments: AiSegment[]
 }
 
-// 扁平消息 → 块状消息盒子（②）：
-//   user                  → 右侧用户消息
-//   assistant(tool_calls) → AI 块：工具调用子组件列表（与后续 tool 结果按 id 配对）+ 最终回复文本
-//   tool                  → 归属其前的 assistant 决策块（不单独成消息）
+// 扁平消息 → 块状消息盒子（②⑥ 穿插式）：
+//   user                    → 右侧用户消息
+//   assistant(tool_calls)   → AI 块：按时间序展开段——
+//                             决策思考(reasoning) → 每个工具调用一个 tool 段 →（结果按 id 回填）
+//                             → 总结思考(reasoning) → 最终回复文本段
+//   tool                    → 归属其前的 assistant 决策块（不单独成消息）
 export function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
   const items: RenderItem[] = []
   let i = 0
   while (i < messages.length) {
     const m = messages[i]
     if (m.role === 'user') {
-      items.push({ key: i, role: 'user', content: m.content ?? '', toolCalls: [] })
+      items.push({ key: i, role: 'user', content: m.content ?? '', segments: [] })
       i++
       continue
     }
     if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
-      // AI 块开始：解析工具调用（arguments 是 JSON 字符串 → 对象）
-      const toolCalls: ToolCallBlock[] = m.tool_calls.map((tc) => {
+      // AI 块开始：决策思考在前（穿插第一段）
+      const segments: AiSegment[] = []
+      let segIdx = 0
+      if (m.reasoning) {
+        segments.push({ type: 'reasoning', key: `r${i}-${segIdx++}`, reasoning: m.reasoning })
+      }
+      // 每个工具调用一个独立 tool 段（arguments 是 JSON 字符串 → 对象）
+      for (const tc of m.tool_calls) {
         let args: Record<string, unknown> = {}
         try {
           args = tc.arguments ? (JSON.parse(tc.arguments) as Record<string, unknown>) : {}
         } catch {
           args = { raw: tc.arguments }
         }
-        return { id: tc.id, name: tc.name, args }
-      })
+        segments.push({ type: 'tool', key: `t${i}-${tc.id}`, tool: { id: tc.id, name: tc.name, args } })
+      }
       i++
       // 收集紧随其后的 tool 结果消息（按 tool_call_id 配对回填）
       while (i < messages.length && messages[i].role === 'tool') {
         const tm = messages[i]
-        const target = toolCalls.find((tc) => tc.id === tm.tool_call_id)
-        if (target) {
-          target.result = tm.content ?? ''
-          target.status = (tm.content ?? '').startsWith('错误') ? 'error' : 'success'
+        for (const seg of segments) {
+          if (seg.type === 'tool' && seg.tool && seg.tool.id === tm.tool_call_id) {
+            seg.tool.result = tm.content ?? ''
+            seg.tool.status = (tm.content ?? '').startsWith('错误') ? 'error' : 'success'
+          }
         }
         i++
       }
-      // 该块最终的 assistant 总结文本（如有）
+      // 该块最终的 assistant 总结消息（可带思考 + 文本）→ 继续穿插
       let content = ''
       if (i < messages.length && messages[i].role === 'assistant' && !messages[i].tool_calls) {
-        content = messages[i].content ?? ''
+        const sm = messages[i]
+        if (sm.reasoning) {
+          segments.push({ type: 'reasoning', key: `r${i}-${segIdx++}`, reasoning: sm.reasoning })
+        }
+        content = sm.content ?? ''
+        if (content) {
+          segments.push({ type: 'text', key: `x${i}-${segIdx++}`, text: content })
+        }
         i++
       }
-      items.push({ key: i, role: 'assistant', content, toolCalls })
+      items.push({ key: i, role: 'assistant', content, segments })
       continue
     }
     if (m.role === 'assistant') {
-      items.push({ key: i, role: 'assistant', content: m.content ?? '', toolCalls: [] })
+      // 纯文本 AI 消息：思考段（如有）+ 文本段
+      const segments: AiSegment[] = []
+      if (m.reasoning) segments.push({ type: 'reasoning', key: `r${i}`, reasoning: m.reasoning })
+      if (m.content) segments.push({ type: 'text', key: `x${i}`, text: m.content })
+      items.push({ key: i, role: 'assistant', content: m.content ?? '', segments })
       i++
       continue
     }
@@ -87,18 +107,10 @@ export default function ChatBox({ messages, streaming, input, busy, disabled, on
               <span className="msg-label">用户</span>
             </div>
           ) : (
-            <AiMessageBox
-              key={item.key}
-              block={{
-                reasoning: '',
-                toolCalls: item.toolCalls,
-                content: item.content,
-                streaming: false,
-              }}
-            />
+            <AiMessageBox key={item.key} segments={item.segments} />
           ),
         )}
-        {streaming && <AiMessageBox block={streaming} />}
+        {streaming && <AiMessageBox segments={streaming.segments} streaming />}
         {items.length === 0 && !streaming && <div className="chat-empty">输入消息，开始对话吧。</div>}
       </div>
       <div className="chat-input-row">

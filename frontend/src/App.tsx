@@ -110,28 +110,41 @@ export default function App() {
     }
   }
 
-  // 增量事件 → 组装进当前 AI 消息块（⑥ reasoning + ② 工具子组件 + 回复增量）
+  // 增量事件 → 按时间序追加为 AI 消息块"段"（②⑥ 穿插式）：
+  //   reasoning   → 追加/合并思考段
+  //   tool_call   → 新工具段（等 tool_result 回填）
+  //   tool_result → 按 id 回填对应工具段
+  //   message_delta → 追加/合并末尾文本段（最终回复）
   const applyEvents = useCallback((events: StreamEvent[]) => {
     setStreaming((prev) => {
       if (!prev) return prev
-      const next: AiBlock = { ...prev, toolCalls: [...prev.toolCalls] }
+      const segments = [...prev.segments]
       for (const ev of events) {
         if (ev.type === 'reasoning') {
-          next.reasoning += ev.content ?? ''
+          const last = segments[segments.length - 1]
+          if (last && last.type === 'reasoning') last.reasoning += ev.content ?? ''
+          else segments.push({ type: 'reasoning', key: `r${ev.seq}`, reasoning: ev.content ?? '' })
         } else if (ev.type === 'tool_call') {
-          next.toolCalls.push({ id: ev.id ?? '', name: ev.name ?? '', args: ev.args ?? {} })
+          segments.push({
+            type: 'tool',
+            key: `t${ev.id ?? ev.seq}`,
+            tool: { id: ev.id ?? '', name: ev.name ?? '', args: ev.args ?? {} },
+          })
         } else if (ev.type === 'tool_result') {
-          const target = next.toolCalls.find((tc) => tc.id === ev.id)
-          if (target) {
-            target.result = ev.result
-            target.status = ev.status
-            target.duration_ms = ev.duration_ms
+          for (const seg of segments) {
+            if (seg.type === 'tool' && seg.tool && seg.tool.id === ev.id) {
+              seg.tool.result = ev.result
+              seg.tool.status = ev.status
+              seg.tool.duration_ms = ev.duration_ms
+            }
           }
         } else if (ev.type === 'message_delta') {
-          next.content += ev.delta ?? ''
+          const last = segments[segments.length - 1]
+          if (last && last.type === 'text') last.text += ev.delta ?? ''
+          else segments.push({ type: 'text', key: `d${ev.seq}`, text: ev.delta ?? '' })
         }
       }
-      return next
+      return { ...prev, segments }
     })
   }, [])
 
@@ -160,7 +173,7 @@ export default function App() {
     setMessages((prev) => [...prev, { role: 'user', content }])
     setInput('')
     // 流式：先挂起空 AI 块（思考中），同时启动事件轮询
-    setStreaming({ reasoning: '', toolCalls: [], content: '', streaming: true })
+    setStreaming({ segments: [], streaming: true })
     seqRef.current = 0
     startPolling(currentId)
     try {

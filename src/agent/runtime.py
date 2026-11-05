@@ -67,8 +67,12 @@ class AgentRuntime:
             trace: list[dict] = []
 
             # 2) 最多循环 max_rounds 轮：每轮让 LLM 决策"直接回复 or 调用工具"
+            last_reasoning: str | None = None
             for _ in range(self.max_rounds):
                 response: LLMResponse = self.llm.generate(messages)
+                # 记录本轮思考过程：最终回复消息会带上最后一轮的 reasoning（落库供前端穿插渲染）
+                if response.reasoning:
+                    last_reasoning = response.reasoning
                 # 2a) 思考过程事件：LLM 返回 reasoning 时实时入队（⑥ 前端显示思考过程）
                 if self.queue and response.reasoning:
                     self.queue.publish(session.session_id, {
@@ -79,9 +83,11 @@ class AgentRuntime:
                     #     一条 assistant 消息，tool_calls 是 OpenAI 兼容形状的纯 dict 列表，
                     #     每条调用分配唯一 id（ToolCall.id 为空时用 uuid 兜底）。
                     #     arguments 必须是 JSON 字符串（协议要求），工具参数 dict 用 json.dumps 序列化。
+                    #     reasoning 一并落库：刷新全量后思考过程不丢，前端按时间序穿插渲染（⑥）。
                     decision = {
                         "role": "assistant",
                         "content": None,
+                        "reasoning": response.reasoning,
                         "tool_calls": [
                             {
                                 "id": call.id or f"call_{uuid.uuid4().hex[:12]}",
@@ -132,7 +138,11 @@ class AgentRuntime:
 
             # 6) 把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
             #    system prompt 是运行时注入的上下文，不写入对话历史（存储保持干净）
-            messages.append({"role": "assistant", "content": reply})
+            #    带上最后一轮 reasoning：思考过程随最终回复一并落库（⑥ 全量刷新后仍在）
+            reply_msg: dict = {"role": "assistant", "content": reply}
+            if last_reasoning:
+                reply_msg["reasoning"] = last_reasoning
+            messages.append(reply_msg)
             session.messages = [m for m in messages if m.get("role") != "system"]
             session.traces.extend(trace)
 
@@ -163,8 +173,12 @@ class AgentRuntime:
             trace: list[dict] = []
 
             # 2) 最多循环 max_rounds 轮：每轮让 LLM 决策"直接回复 or 调用工具"
+            last_reasoning: str | None = None
             for _ in range(self.max_rounds):
                 response: LLMResponse = await self.llm.async_generate(messages)
+                # 记录本轮思考过程：最终回复消息会带上最后一轮的 reasoning（落库供前端穿插渲染）
+                if response.reasoning:
+                    last_reasoning = response.reasoning
                 # 2a) 思考过程事件：LLM 返回 reasoning 时实时入队（⑥ 前端显示思考过程）
                 if self.queue and response.reasoning:
                     self.queue.publish(session.session_id, {
@@ -175,9 +189,11 @@ class AgentRuntime:
                     #     一条 assistant 消息，tool_calls 是 OpenAI 兼容形状的纯 dict 列表，
                     #     每条调用分配唯一 id（ToolCall.id 为空时用 uuid 兜底）。
                     #     arguments 必须是 JSON 字符串（协议要求），工具参数 dict 用 json.dumps 序列化。
+                    #     reasoning 一并落库：刷新全量后思考过程不丢，前端按时间序穿插渲染（⑥）。
                     decision = {
                         "role": "assistant",
                         "content": None,
+                        "reasoning": response.reasoning,
                         "tool_calls": [
                             {
                                 "id": call.id or f"call_{uuid.uuid4().hex[:12]}",
@@ -228,7 +244,11 @@ class AgentRuntime:
 
             # 6) 把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
             #    system prompt 是运行时注入的上下文，不写入对话历史（存储保持干净）
-            messages.append({"role": "assistant", "content": reply})
+            #    带上最后一轮 reasoning：思考过程随最终回复一并落库（⑥ 全量刷新后仍在）
+            reply_msg: dict = {"role": "assistant", "content": reply}
+            if last_reasoning:
+                reply_msg["reasoning"] = last_reasoning
+            messages.append(reply_msg)
             session.messages = [m for m in messages if m.get("role") != "system"]
             session.traces.extend(trace)
 
