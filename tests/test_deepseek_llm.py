@@ -201,13 +201,15 @@ def test_runtime_tool_call_id_matching():
     tool_msg = next(m for m in s.messages if m.get("role") == "tool")
     assert decision["tool_calls"][0]["id"] == tool_msg["tool_call_id"] == "call_abc"
 
-    # 第二次调用（带工具结果）发往 API 的消息必须是 OpenAI 形状
+    # 第二次调用（带工具结果）发往 API 的消息必须是 OpenAI 形状。
+    # 注：runtime 现注入 system prompt（消息首条），故按角色语义定位而非固定索引。
     sent = llm.client.chat.completions.calls[1]["messages"]
-    assert sent[1]["tool_calls"][0]["id"] == "call_abc"
-    assert sent[1]["tool_calls"][0]["type"] == "function"
+    decision_msg = next(m for m in sent if m.get("role") == "assistant" and m.get("tool_calls"))
+    tool_msg = next(m for m in sent if m.get("role") == "tool")
+    assert decision_msg["tool_calls"][0]["id"] == "call_abc"
+    assert decision_msg["tool_calls"][0]["type"] == "function"
     # tool 消息回显同一订单号（content 是工具真实输出，这里只验证 id 与角色）
-    assert sent[2]["role"] == "tool"
-    assert sent[2]["tool_call_id"] == "call_abc"
+    assert tool_msg["tool_call_id"] == "call_abc"
 
 
 def test_runtime_uuid_fallback_for_no_id():
