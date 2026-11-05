@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from agent.llm import DeepSeekLLM, MockLLM
 from agent.events import InMemoryQueue
 from agent.log import LogRecord, LogStore, MemoryLogStore, SQLiteLogStore
-from agent.memory import BM25Memory
+from agent.memory import BM25Memory, MemoryExtractor
 from agent.runtime import AgentRuntime
 from agent.session import (
     SessionBusyError,
@@ -126,19 +126,26 @@ if store_type == "sqlite":
 else:
     manager = SessionManager()
 
-# 长期记忆（⑦）：BM25 检索 + 乘法衰减（内存实现，插件化策略可换 SQLite/向量）
-memory = BM25Memory()
-
 # LLM 后端切换：LLM_BACKEND=deepseek 走真实 DeepSeek，默认 mock 保证测试与演示稳定
 backend = os.environ.get("LLM_BACKEND", "mock")
 if backend == "deepseek":
-    runtime = AgentRuntime(
-        llm=DeepSeekLLM().init(), max_rounds=8, queue=event_queue, memory=memory
-    )
+    llm = DeepSeekLLM().init()
 else:
-    runtime = AgentRuntime(
-        llm=MockLLM(), max_rounds=8, queue=event_queue, memory=memory
-    )
+    llm = MockLLM()
+
+# 长期记忆（⑦）：BM25 检索 + 乘法衰减（内存实现，插件化策略可换 SQLite/向量）
+memory = BM25Memory()
+# 落库层 LLM 提取（⑦）：每轮 QA 经 LLM 提取自包含事实后落库（对齐 mem0 写入管线，
+# 指代由"最近消息进提取上下文"消解）；Mock/DeepSeek 同一实例复用
+memory_extractor = MemoryExtractor(llm)
+
+runtime = AgentRuntime(
+    llm=llm,
+    max_rounds=8,
+    queue=event_queue,
+    memory=memory,
+    memory_extractor=memory_extractor,
+)
 
 
 class ChatRequest(BaseModel):

@@ -213,7 +213,26 @@ class MockLLM(LLMClient):
     def init(self) -> None:
         pass
 
+    # 指代词：新问答含这些词时，视为承接上文的省略表达，需用最近消息补全
+    _REFERENTIAL = ("那", "这个", "这", "它", "他", "她", "其", "它们")
+
     def generate(self, messages: list[dict]) -> LLMResponse:
+        # 记忆提取任务（⑦）：system 含"长期记忆提取器"标记 → 走规则提取分支。
+        # 必须放在工具路由之前：提取 prompt 里可能含"天气/计算"等触发词，不能误路由工具。
+        system_text = next(
+            (str(m.get("content", "")) for m in messages if m.get("role") == "system"),
+            "",
+        )
+        if "长期记忆提取器" in system_text:
+            user_text = next(
+                (str(m.get("content", "")) for m in messages if m.get("role") == "user"),
+                "",
+            )
+            return LLMResponse(
+                content=self._extract_memories(user_text),
+                tool_calls=None,
+                reasoning="这是长期记忆提取任务，按规则从对话中提取自包含事实。",
+            )
         last = messages[-1] if messages else {}
         if last.get("role") == "tool":
             # 工具刚执行完：模拟 LLM 基于工具结果生成最终回复
@@ -242,6 +261,21 @@ class MockLLM(LLMClient):
         )
 
     async def async_generate(self, messages: list[dict]) -> LLMResponse:
+        # 记忆提取任务（⑦）：与 generate 同一规则分支
+        system_text = next(
+            (str(m.get("content", "")) for m in messages if m.get("role") == "system"),
+            "",
+        )
+        if "长期记忆提取器" in system_text:
+            user_text = next(
+                (str(m.get("content", "")) for m in messages if m.get("role") == "user"),
+                "",
+            )
+            return LLMResponse(
+                content=self._extract_memories(user_text),
+                tool_calls=None,
+                reasoning="这是长期记忆提取任务，按规则从对话中提取自包含事实。",
+            )
         last = messages[-1] if messages else {}
         if last.get("role") == "tool":
             # 工具刚执行完：模拟 LLM 基于工具结果生成最终回复
@@ -278,3 +312,49 @@ class MockLLM(LLMClient):
         if q.lower().startswith(greetings) or any(g in q.lower() for g in greetings):
             return "你好！我可以帮你计算、搜索知识库或查询天气，例如「计算 1+2*3」「搜索 RAG」「北京天气」。"
         return f"我收到了：{q}（当前为 Mock 模式，未接入真实大模型）"
+
+    # ---- 长期记忆提取（⑦）：规则近似 mem0 的 LLM 提取，输出 {"facts": [...]} ----
+
+    @classmethod
+    def _extract_memories(cls, user_text: str) -> str:
+        """按提取 prompt 的段落结构解析输入，产出自包含事实 JSON。
+
+        规则（笔试规模的可测近似，真实 LLM 由提示词完成同一语义）：
+        1. 新问答含指代词（那/这个/它…）且最近消息有内容 → 用最近一条消息补全主题，
+           避免存成孤立片段（如"那南昌呢"补全为"北京天气…；南昌多云 20 度"）；
+        2. 否则取本轮回复作为事实；
+        3. 输出 {"facts": [...]}（与真实 LLM 同格式，提取器解析路径一致）。
+        """
+        existing_block = cls._slice(user_text, "## Existing Memories", "## Last k Messages")
+        recent_block = cls._slice(user_text, "## Last k Messages", "## New Messages")
+        new_block = cls._slice(user_text, "## New Messages", None)
+        # 解析新问答：形如 "Q: ...\nA: ..."
+        answer = ""
+        question = ""
+        for line in new_block.splitlines():
+            if line.startswith("Q:"):
+                question = line[2:].strip()
+            elif line.startswith("A:"):
+                answer = line[2:].strip()
+        facts: list[str] = []
+        # 指代消解：问句含指代词且最近消息非空 → 上下文补全
+        if question and any(t in question for t in cls._REFERENTIAL) and recent_block.strip():
+            topic = recent_block.strip().splitlines()[0].strip()  # 最近一条消息首行
+            facts.append(f"{topic}；{answer}")
+        elif answer.strip():
+            facts.append(answer.strip())
+        # existing_block 仅作参考（真实 LLM 用它判重/合并；Mock 简化不判重，
+        # 去重由 BM25Memory.remember 的 md5 统一负责）
+        return json.dumps({"facts": facts}, ensure_ascii=False)
+
+    @staticmethod
+    def _slice(text: str, start: str, end: str | None) -> str:
+        """按段落标记切出 section 文本（找不到返回空串）。"""
+        s = text.find(start)
+        if s == -1:
+            return ""
+        s += len(start)
+        e = len(text) if end is None else text.find(end, s)
+        if e == -1:
+            e = len(text)
+        return text[s:e].strip()

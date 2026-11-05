@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from agent.context import build_system_prompt, trim_messages
 from agent.events import EventQueue
 from agent.llm import LLMClient, LLMResponse
-from agent.memory import MemoryStrategy
+from agent.memory import MemoryExtractor, MemoryStrategy
 from agent.session import Session, SessionBusyError
 from agent.tools import get_all_tools, get_tool
 
@@ -36,7 +36,8 @@ class AgentRuntime:
                  max_context_tokens: int = 4000,
                  queue: EventQueue | None = None,
                  memory: MemoryStrategy | None = None,
-                 memory_recall_k: int = 10) -> None:
+                 memory_recall_k: int = 10,
+                 memory_extractor: MemoryExtractor | None = None) -> None:
         self.llm = llm
         self.max_rounds = max_rounds
         # context 窗口上限：估算 token 超限时从最旧裁剪（见 agent/context.py）
@@ -48,6 +49,9 @@ class AgentRuntime:
         # 默认 None：不配即无记忆（既有测试零影响），插件化策略可换实现。
         self.memory = memory
         self.memory_recall_k = memory_recall_k
+        # 落库层 LLM 提取器（⑦）：配置后每轮 QA 先经 LLM 提取自包含事实再落库，
+        # 指代（"那南昌呢"承接上文）由提取上下文消解；不配则直接存原始 QA。
+        self.memory_extractor = memory_extractor
 
     def _build_messages(self, session: Session, user_content: str) -> list[dict]:
         """构造发给 LLM 的消息列表：system prompt（会话级，首次构造后复用）
@@ -152,12 +156,9 @@ class AgentRuntime:
             # 5a) 流式输出：最终回复切成增量块入队（前端逐块渲染，done 标记收尾）
             self._publish_reply(session.session_id, reply)
 
-            # 5b) 长期记忆落库（⑦）：本轮 QA 合并为一条记忆，供后续提问召回。
-            #     短期窗口裁掉的信息不丢，可经长期记忆重新进入上下文。
-            if self.memory:
-                self.memory.remember(
-                    session.session_id, f"Q: {user_content}\nA: {reply}"
-                )
+            # 5b) 长期记忆落库（⑦）：有提取器则 LLM 提取自包含事实后逐条落库，
+            #     否则直接存原始 QA。短期窗口裁掉的信息可经召回重新进入上下文。
+            self._remember_round(session, user_content, reply)
 
             # 6) 把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
             #    system prompt 是运行时注入的上下文，不写入对话历史（存储保持干净）
@@ -265,12 +266,9 @@ class AgentRuntime:
             # 5a) 流式输出：最终回复切成增量块入队（前端逐块渲染，done 标记收尾）
             self._publish_reply(session.session_id, reply)
 
-            # 5b) 长期记忆落库（⑦）：本轮 QA 合并为一条记忆，供后续提问召回。
-            #     短期窗口裁掉的信息不丢，可经长期记忆重新进入上下文。
-            if self.memory:
-                self.memory.remember(
-                    session.session_id, f"Q: {user_content}\nA: {reply}"
-                )
+            # 5b) 长期记忆落库（⑦）：有提取器则 LLM 提取自包含事实后逐条落库，
+            #     否则直接存原始 QA。短期窗口裁掉的信息可经召回重新进入上下文。
+            await asyncio.to_thread(self._remember_round, session, user_content, reply)
 
             # 6) 把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
             #    system prompt 是运行时注入的上下文，不写入对话历史（存储保持干净）
@@ -318,6 +316,34 @@ class AgentRuntime:
                 "delta": chunk,
                 "done": i == len(chunks) - 1,
             })
+
+    def _remember_round(self, session: Session, user_content: str, reply: str) -> None:
+        """长期记忆落库（⑦）：LLM 提取自包含事实后逐条落库。
+
+        写入管线对齐 mem0（MEM0_DEEP_DIVE.md §1）：
+        - P1 已有记忆：以本轮提问召回相关记忆，供提取器判重/合并参考（防幻觉）；
+        - P0 最近消息：最近 k 条历史消息进提取上下文，消解指代（"那南昌呢"承接上文）；
+        - P2 LLM 提取：从「已有记忆 + 最近消息 + 本轮 QA」提取自包含事实；
+        - P4/P5 去重：BM25Memory.remember 内 md5 去重，完全重复不重复入库。
+        未配置提取器时直接存原始 QA（兼容既有行为）。
+        """
+        if not self.memory:
+            return
+        qa = f"Q: {user_content}\nA: {reply}"
+        if self.memory_extractor is None:
+            self.memory.remember(session.session_id, qa)
+            return
+        existing = self.memory.recall(
+            user_content, k=5, session_id=session.session_id
+        )
+        recent = [
+            str(m.get("content", ""))
+            for m in session.messages[-self.memory_extractor.recent_k:]
+            if m.get("content")
+        ]
+        facts = self.memory_extractor.extract(existing, qa, recent)
+        for fact in facts:
+            self.memory.remember(session.session_id, fact)
 
     @staticmethod
     def _execute_tool(name: str, args: dict[str, str]) -> dict:

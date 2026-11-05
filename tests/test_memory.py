@@ -1,7 +1,10 @@
-"""长期记忆测试（⑦）：BM25 检索相关性 + 乘法衰减 + runtime 接入闭环。"""
+"""长期记忆测试（⑦）：BM25 检索相关性 + 乘法衰减 + runtime 接入闭环 + LLM 提取落库。"""
 from __future__ import annotations
 
-from agent.memory import BM25Memory, MemoryEntry
+import asyncio
+
+from agent.llm import MockLLM
+from agent.memory import BM25Memory, MemoryExtractor
 from agent.runtime import AgentRuntime
 from agent.session import Session
 from agent.tools import get_tool
@@ -84,6 +87,80 @@ def test_runtime_without_memory_no_recall():
     s = Session(session_id="s1", created_at="t")
     msgs = rt._build_messages(s, "南昌天气如何")
     assert "【长期记忆" not in msgs[0]["content"]
+
+
+# ---- LLM 提取落库（⑦ 落库层改造，对齐 mem0 P0/P1/P2）----
+
+def _qa(q: str, a: str) -> str:
+    return f"Q: {q}\nA: {a}"
+
+
+def test_extractor_extracts_answer():
+    """无指代：提取器输出本轮回复作为事实（自包含）。"""
+    ext = MemoryExtractor(MockLLM())
+    facts = ext.extract([], _qa("南昌天气如何", "南昌多云 20 度"), [])
+    assert facts == ["南昌多云 20 度"]
+
+
+def test_extractor_referential_resolution():
+    """指代消解：'那南昌呢'承接上文'北京天气' → 事实自包含（含上下文，无孤立片段）。"""
+    ext = MemoryExtractor(MockLLM())
+    recent = ["Q: 北京天气如何\nA: 北京晴 17 度"]
+    facts = ext.extract([], _qa("那南昌呢", "南昌多云 20 度"), recent)
+    assert len(facts) == 1
+    assert "北京" in facts[0]  # 上下文被补全
+    assert "南昌" in facts[0]
+    assert "那" not in facts[0].split("；")[0]  # 指代词已消解
+
+
+def test_extractor_fallback_on_invalid_json():
+    """LLM 输出非法 JSON → 降级为原始 QA 单条（记忆写入永远可用）。"""
+    class _BrokenLLM(MockLLM):
+        def generate(self, messages):
+            from agent.llm import LLMResponse
+            return LLMResponse(content="不是JSON", tool_calls=None)
+
+    ext = MemoryExtractor(_BrokenLLM())
+    facts = ext.extract([], _qa("南昌天气如何", "南昌多云 20 度"), [])
+    assert facts == ["Q: 南昌天气如何\nA: 南昌多云 20 度"]
+
+
+def test_remember_dedup_same_content():
+    """md5 去重（对齐 mem0 P4/P5）：完全重复的事实不重复入库。"""
+    mem = BM25Memory()
+    mem.remember("s1", "南昌多云 20 度")
+    mem.remember("s1", "南昌多云 20 度")
+    mem.remember("s1", "南昌多云 21 度")
+    assert len(mem.recall("南昌", k=10, session_id="s1")) == 2
+
+
+def test_runtime_qa_extracted_via_llm():
+    """集成：runtime 配提取器后，落库的是 LLM 提取的自包含事实，而非原始 QA 壳。"""
+    rt = AgentRuntime(
+        llm=MockLLM(),
+        memory=BM25Memory(),
+        memory_extractor=MemoryExtractor(MockLLM()),
+    )
+    s = Session(session_id="s1", created_at="t")
+    rt.run(s, "南昌天气如何")
+    hits = rt.memory.recall("南昌", k=5, session_id="s1")
+    assert len(hits) == 1
+    assert "Q:" not in hits[0].content  # 提取后事实，不带 QA 壳
+    assert "南昌" in hits[0].content
+
+
+def test_async_run_extracted_via_llm():
+    """async 路径（to_thread 包装）同样走 LLM 提取落库。"""
+    rt = AgentRuntime(
+        llm=MockLLM(),
+        memory=BM25Memory(),
+        memory_extractor=MemoryExtractor(MockLLM()),
+    )
+    s = Session(session_id="s1", created_at="t")
+    asyncio.run(rt.async_run(s, "南昌天气如何"))
+    hits = rt.memory.recall("南昌", k=5, session_id="s1")
+    assert len(hits) == 1
+    assert "Q:" not in hits[0].content
 
 
 class _FakeLLM:
