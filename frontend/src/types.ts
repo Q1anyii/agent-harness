@@ -21,6 +21,8 @@ export interface ChatMessage {
   name?: string
   tool_call_id?: string
   tool_calls?: ChatToolCall[]
+  // 思考过程（⑥）：assistant 决策/总结消息落库带回，前端按时间序穿插渲染
+  reasoning?: string | null
 }
 
 export interface TraceItem {
@@ -76,10 +78,19 @@ export interface ToolCallBlock {
   duration_ms?: number
 }
 
-// 流式中的 AI 消息块（⑥ reasoning + ② 工具子组件 + 最终回复）
+// AI 消息块内的一个"段"（②⑥ 穿插式：按时间序 = 思考 → 工具 → 思考 → … → 最终回复）
+export type AiSegmentType = 'reasoning' | 'tool' | 'text'
+
+export interface AiSegment {
+  type: AiSegmentType
+  key: string
+  reasoning?: string
+  tool?: ToolCallBlock
+  text?: string
+}
+
+// 流式中的 AI 消息块：segments 按事件到达顺序追加，天然穿插
 export interface AiBlock {
-  reasoning: string
-  toolCalls: ToolCallBlock[]
-  content: string
+  segments: AiSegment[]
   streaming: boolean
 }

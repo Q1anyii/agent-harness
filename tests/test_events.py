@@ -101,6 +101,22 @@ def test_runtime_pushes_event_sequence():
     assert "".join(e["delta"] for e in deltas) == result.reply
 
 
+def test_reasoning_persisted_in_messages():
+    """⑥ 落库：决策消息与最终回复消息都带 reasoning，全量刷新后思考过程不丢。"""
+    rt = AgentRuntime(llm=MockLLM(), max_rounds=8)
+    mgr = SessionManager()
+    s = mgr.create()
+
+    rt.run(s, "帮我计算 1+2*3")
+    # 历史中找决策消息（assistant 带 tool_calls）与总结消息（assistant 带 content）
+    decision = next(m for m in s.messages if m.get("tool_calls"))
+    summary = next(m for m in s.messages if m.get("role") == "assistant" and not m.get("tool_calls"))
+    assert decision["reasoning"]  # 决策前思考已落库
+    assert "calculator" in decision["reasoning"]
+    assert summary["reasoning"]  # 总结前思考已落库
+    assert "组织最终回复" in summary["reasoning"]
+
+
 def test_runtime_no_queue_no_crash():
     """不传队列时（既有 sync 测试路径）静默跳过，不抛错。"""
     rt = AgentRuntime(llm=MockLLM())
