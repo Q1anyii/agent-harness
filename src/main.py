@@ -17,6 +17,7 @@ from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 
 from agent.llm import DeepSeekLLM, MockLLM
+from agent.events import InMemoryQueue
 from agent.runtime import AgentRuntime
 from agent.session import (
     SessionBusyError,
@@ -56,6 +57,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 流式事件队列（④）：生成侧（runtime）入队，前端轮询 /events 消费。
+# 内存实现：会话隔离 + 单调 seq，断连后前端先全量刷新消息再续轮询。
+event_queue = InMemoryQueue()
+
 # 存储后端切换：memory（默认，测试/演示稳定，对象即引用）
 #              | sqlite（落库持久化，真实运行：$env:SESSION_STORE="sqlite"）
 store_type = os.environ.get("SESSION_STORE", "memory")
@@ -67,9 +72,11 @@ else:
 # LLM 后端切换：LLM_BACKEND=deepseek 走真实 DeepSeek，默认 mock 保证测试与演示稳定
 backend = os.environ.get("LLM_BACKEND", "mock")
 if backend == "deepseek":
-    runtime = AgentRuntime(llm=DeepSeekLLM().init(), max_rounds=8)
+    runtime = AgentRuntime(
+        llm=DeepSeekLLM().init(), max_rounds=8, queue=event_queue
+    )
 else:
-    runtime = AgentRuntime(llm=MockLLM(), max_rounds=8)
+    runtime = AgentRuntime(llm=MockLLM(), max_rounds=8, queue=event_queue)
 
 
 class ChatRequest(BaseModel):
@@ -109,6 +116,7 @@ def list_sessions() -> dict:
 def delete_session(session_id: str) -> None:
     try:
         manager.remove(session_id)
+        event_queue.clear(session_id)  # 同步清理该会话的流式事件，防内存泄漏
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="会话不存在")
 
@@ -160,6 +168,24 @@ def get_trace(session_id: str) -> dict:
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="会话不存在")
     return {"session_id": session_id, "trace": s.traces}
+
+
+@app.get("/api/sessions/{session_id}/events", tags=["chat"])
+def get_events(session_id: str, since: int = 0) -> dict:
+    """流式事件轮询端点（④）：返回 seq > since 的增量事件。
+
+    前端 1s 级 setInterval 轮询；断连后先刷新 /messages 全量，再以
+    since=最新 seq 续拉增量。since=0 返回队列内全部事件。
+    """
+    try:
+        manager.get(session_id)  # 校验会话存在（404 语义一致）
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {
+        "session_id": session_id,
+        "events": event_queue.subscribe(session_id, since),
+        "latest_seq": event_queue.latest_seq(session_id),
+    }
 
 
 if __name__ == "__main__":
