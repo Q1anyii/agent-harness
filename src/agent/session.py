@@ -99,6 +99,38 @@ class SessionManager(SessionStore):
         session.traces.extend(traces)
 
 
+def connect_sqlite(db_path: str) -> sqlite3.Connection:
+    """打开 SQLite 连接（会话/日志落库共用，根因修复只写一次）。
+
+    - 每次操作新连接：避免跨线程共享连接（FastAPI 线程池 + 事件循环并发访问）
+    - 事务日志放内存（journal_mode=MEMORY）：当前运行环境（沙箱）会拦截 SQLite
+      默认 rollback journal 文件（.db-journal）的落盘，导致 DDL/DML 静默失效；
+      MEMORY 模式绕过该拦截，数据库主文件本身仍正常持久化（实测验证）。
+      崩溃安全性略降（最后未同步事务可能丢失），对单机本地部署可接受。
+    """
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=MEMORY")
+    return conn
+
+
+@contextmanager
+def sqlite_transaction(db_path: str):
+    """短连接事务上下文：成功 commit / 异常 rollback / 最后必 close。
+
+    注意：`with sqlite3.connect(...) as conn` 只提交不关闭连接，
+    Windows 下会因文件句柄未释放导致后续无法删除数据库文件（实测 PermissionError）。
+    """
+    conn = connect_sqlite(db_path)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 class SQLiteSessionStore(SessionStore):
     """SQLite 落库实现：sessions / messages / traces 三表（logs 由中间件另用）。
 
@@ -113,31 +145,14 @@ class SQLiteSessionStore(SessionStore):
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        # 每次操作新连接：避免跨线程共享连接（FastAPI 线程池 + 事件循环并发访问）
-        conn = sqlite3.connect(self.db_path)
-        # 事务日志放内存（journal_mode=MEMORY）：当前运行环境（沙箱）会拦截 SQLite
-        # 默认 rollback journal 文件（.db-journal）的落盘，导致 DDL/DML 静默失效；
-        # MEMORY 模式绕过该拦截，数据库主文件本身仍正常持久化（实测验证）。
-        # 崩溃安全性略降（最后未同步事务可能丢失），对单机本地部署可接受。
-        conn.execute("PRAGMA journal_mode=MEMORY")
-        return conn
+        # 复用模块级 connect_sqlite：每次操作新连接（跨线程安全）+ journal_mode=MEMORY（沙箱根因）
+        return connect_sqlite(self.db_path)
 
     @contextmanager
     def _session(self):
-        """短连接上下文：成功 commit / 异常 rollback / 最后必 close。
-
-        注意：`with sqlite3.connect(...) as conn` 只提交不关闭连接，
-        Windows 下会因文件句柄未释放导致后续无法删除数据库文件（实测 PermissionError）。
-        """
-        conn = self._connect()
-        try:
+        # 复用模块级 sqlite_transaction：短连接 commit/rollback/close（Windows 文件句柄根因）
+        with sqlite_transaction(self.db_path) as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     def _init_schema(self) -> None:
         with self._session() as conn:
