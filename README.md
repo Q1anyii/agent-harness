@@ -4,6 +4,8 @@ A self-implementation agent harness project.
 
 自实现 Agent harness：FastAPI 后端 + Vite/React/TS 前端，无外部 Agent 框架，自实现类 LangGraph 的循环、节点、状态机与 Runtime。
 
+![](./assets/demo.png)
+
 ## 功能
 
 - **主循环**：接收输入 → 判断直接回复/调用工具 → 调用工具 → 继续/终止（单次问答轮次上限 8）
