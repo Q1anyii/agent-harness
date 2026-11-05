@@ -7,9 +7,10 @@ import time
 import uuid
 from dataclasses import dataclass
 
+from agent.context import build_system_prompt, trim_messages
 from agent.llm import LLMClient, LLMResponse
 from agent.session import Session, SessionBusyError
-from agent.tools import get_tool
+from agent.tools import get_all_tools, get_tool
 
 
 @dataclass
@@ -29,9 +30,26 @@ class AgentRuntime:
     Step4 根据工具结果判断继续 loop 还是返回给用户
     """
 
-    def __init__(self, llm: LLMClient, max_rounds: int = 8) -> None:
+    def __init__(self, llm: LLMClient, max_rounds: int = 8,
+                 max_context_tokens: int = 4000) -> None:
         self.llm = llm
         self.max_rounds = max_rounds
+        # context 窗口上限：估算 token 超限时从最旧裁剪（见 agent/context.py）
+        self.max_context_tokens = max_context_tokens
+
+    def _build_messages(self, session: Session, user_content: str) -> list[dict]:
+        """构造发给 LLM 的消息列表：system prompt（会话级，首次构造后复用）
+        + 对话历史 + 本轮 user 提问，最后做 context 窗口裁剪。"""
+        messages: list[dict] = list(session.messages)
+        # system prompt：会话开始时构造一次（含可用工具与当前时间），之后复用
+        if not session.system_prompt:
+            session.system_prompt = build_system_prompt(
+                [t.name for t in get_all_tools()]
+            )
+        messages.insert(0, {"role": "system", "content": session.system_prompt})
+        messages.append({"role": "user", "content": user_content})
+        # 上下文膨胀压缩：保留 system + 最近消息，最后一条 user 无条件保留
+        return trim_messages(messages, self.max_context_tokens)
 
     def run(self, session: Session, user_content: str) -> AgentResult:
         # 0) 会话忙时拒绝新消息，避免并发覆盖状态（对应架构题模块四第 2 问）
@@ -40,8 +58,7 @@ class AgentRuntime:
         session.state = "busy"
         try:
             # 1) 复制会话历史（不污染原列表），并把本轮用户输入追加为 user 消息
-            messages: list[dict] = list(session.messages)
-            messages.append({"role": "user", "content": user_content})
+            messages: list[dict] = self._build_messages(session, user_content)
             trace: list[dict] = []
 
             # 2) 最多循环 max_rounds 轮：每轮让 LLM 决策"直接回复 or 调用工具"
@@ -88,8 +105,9 @@ class AgentRuntime:
                 reply = f"已达到单次问答工具调用轮次上限（{self.max_rounds} 轮），已终止本次执行。"
 
             # 6) 把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
+            #    system prompt 是运行时注入的上下文，不写入对话历史（存储保持干净）
             messages.append({"role": "assistant", "content": reply})
-            session.messages = messages
+            session.messages = [m for m in messages if m.get("role") != "system"]
             session.traces.extend(trace)
 
             # 7) 工具调用次数 = 最近一条 user 消息之后出现的 tool 消息数，
@@ -115,8 +133,7 @@ class AgentRuntime:
         session.state = "busy"
         try:
             # 1) 复制会话历史（不污染原列表），并把本轮用户输入追加为 user 消息
-            messages: list[dict] = list(session.messages)
-            messages.append({"role": "user", "content": user_content})
+            messages: list[dict] = self._build_messages(session, user_content)
             trace: list[dict] = []
 
             # 2) 最多循环 max_rounds 轮：每轮让 LLM 决策"直接回复 or 调用工具"
@@ -163,8 +180,9 @@ class AgentRuntime:
                 reply = f"已达到单次问答工具调用轮次上限（{self.max_rounds} 轮），已终止本次执行。"
 
             # 6) 把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
+            #    system prompt 是运行时注入的上下文，不写入对话历史（存储保持干净）
             messages.append({"role": "assistant", "content": reply})
-            session.messages = messages
+            session.messages = [m for m in messages if m.get("role") != "system"]
             session.traces.extend(trace)
 
             # 7) 工具调用次数 = 最近一条 user 消息之后出现的 tool 消息数，
