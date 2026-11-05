@@ -3,21 +3,26 @@
 - 会话管理：创建 / 列表 / 历史消息 / trace
 - Agent 循环：MockLLM 决策 + 工具调用 + 轮次上限
 - 存储为内存实现（落库留待后续迭代）
+- 全局中间件（⑤）：请求计时 + 未捕获异常兜底 + 日志入库
 
 启动：python src/main.py（默认 8000 端口，可用 PORT 环境变量覆盖）
 """
 from __future__ import annotations
 
 import os
+import time
+from datetime import datetime, timezone
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from agent.llm import DeepSeekLLM, MockLLM
 from agent.events import InMemoryQueue
+from agent.log import LogRecord, LogStore, MemoryLogStore, SQLiteLogStore
 from agent.runtime import AgentRuntime
 from agent.session import (
     SessionBusyError,
@@ -56,6 +61,57 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _session_id_from_path(path: str) -> str:
+    """从请求路径提取会话 ID（/api/sessions/{sid}/...），供日志按会话回溯。"""
+    parts = path.split("/")
+    if len(parts) >= 4 and parts[1] == "api" and parts[2] == "sessions":
+        return parts[3]
+    return ""
+
+
+# 日志存储后端切换：memory（默认，测试/演示稳定） | sqlite（落库持久化）
+# 与 SESSION_STORE 独立开关：日志关注点独立，可分别控制
+log_store_type = os.environ.get("LOG_STORE", "memory")
+if log_store_type == "sqlite":
+    log_store: LogStore = SQLiteLogStore(os.environ.get("SESSION_DB", "data/agent-harness.db"))
+else:
+    log_store = MemoryLogStore()
+
+
+@app.middleware("http")
+async def timing_and_error_middleware(request: Request, call_next):
+    """全局中间件（⑤）：请求计时 + 未捕获异常兜底 + 日志入库。
+
+    - 正常路径：call_next 返回响应 → 记录 status/duration_ms；
+    - 异常路径：捕获未捕获异常 → 兜底生成 500 JSON 响应 + 记录 error；
+    - HTTPException（404/409 等）由内层 ExceptionMiddleware 转响应，这里只负责计时记录。
+    """
+    start = time.perf_counter()
+    status, error = 500, ""
+    try:
+        response = await call_next(request)
+        status = response.status_code
+    except Exception as exc:  # 兜底：未捕获异常统一转 500 JSON，避免泄露堆栈
+        error = f"{type(exc).__name__}: {exc}"
+        response = JSONResponse(
+            status_code=500,
+            content={"detail": f"服务器内部错误: {type(exc).__name__}"},
+        )
+    finally:
+        log_store.append(
+            LogRecord(
+                ts=datetime.now(timezone.utc).isoformat(),
+                method=request.method,
+                path=request.url.path,
+                session_id=_session_id_from_path(request.url.path),
+                status=status,
+                duration_ms=round((time.perf_counter() - start) * 1000, 3),
+                error=error,
+            )
+        )
+    return response
 
 # 流式事件队列（④）：生成侧（runtime）入队，前端轮询 /events 消费。
 # 内存实现：会话隔离 + 单调 seq，断连后前端先全量刷新消息再续轮询。
