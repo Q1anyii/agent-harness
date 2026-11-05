@@ -18,7 +18,12 @@ from pydantic import BaseModel, Field
 
 from agent.llm import DeepSeekLLM, MockLLM
 from agent.runtime import AgentRuntime
-from agent.session import SessionBusyError, SessionManager, SessionNotFoundError
+from agent.session import (
+    SessionBusyError,
+    SessionManager,
+    SessionNotFoundError,
+    SQLiteSessionStore,
+)
 from agent.tools import get_all_tools
 
 app = FastAPI(
@@ -51,7 +56,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-manager = SessionManager()
+# 存储后端切换：memory（默认，测试/演示稳定，对象即引用）
+#              | sqlite（落库持久化，真实运行：$env:SESSION_STORE="sqlite"）
+store_type = os.environ.get("SESSION_STORE", "memory")
+if store_type == "sqlite":
+    manager = SQLiteSessionStore(os.environ.get("SESSION_DB", "data/agent-harness.db"))
+else:
+    manager = SessionManager()
 
 # LLM 后端切换：LLM_BACKEND=deepseek 走真实 DeepSeek，默认 mock 保证测试与演示稳定
 backend = os.environ.get("LLM_BACKEND", "mock")
@@ -119,6 +130,8 @@ async def send_message(session_id: str, req: ChatRequest) -> dict:
         raise HTTPException(status_code=404, detail="会话不存在")
     try:
         result = await runtime.async_run(s, req.content)
+        # 存储层持久化（memory 实现为 no-op；sqlite 模式落库消息/trace/状态）
+        manager.save(s)
     except SessionBusyError:
         raise HTTPException(status_code=409, detail="会话正忙，请稍后重试")
     return {
