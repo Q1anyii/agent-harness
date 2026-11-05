@@ -17,7 +17,9 @@ from agent.tools import get_all_tools
 from dotenv import load_dotenv
 
 
-load_dotenv(override=True)
+# 加载 .env 兜底配置。注意不 override：shell 显式设置的环境变量优先于 .env，
+# 否则测试命令里的 $env:LLM_BACKEND="mock" 会被 .env 的 deepseek 覆盖，测试误走真实 LLM。
+load_dotenv()
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,10 @@ class LLMClient(ABC):
     def generate(self, messages: list[dict]) -> LLMResponse:
         """输入消息历史，返回文本回复或工具调用列表。"""
 
+    @abstractmethod
+    async def async_generate(self, messages: list[dict]) -> LLMResponse:
+        """输入消息历史，异步返回文本回复或工具调用列表。"""
+
 
 class DeepSeekLLM(LLMClient):
     """真实 DeepSeek（OpenAI 兼容协议）接入：消息转换 + 工具调用解析。"""
@@ -62,10 +68,11 @@ class DeepSeekLLM(LLMClient):
         self.api_key = api_key
         self.base_url = base_url
         self.client = None  # 延迟到 init() 创建，测试可注入 fake client
+        self.async_client = None
 
     def init(self) -> DeepSeekLLM:
         """读环境变量/缺省值 → 创建 OpenAI 兼容客户端。"""
-        from openai import OpenAI
+        from openai import OpenAI, AsyncOpenAI
 
         # 1) 环境变量兜底：未显式传入时读 .env（模块顶部 load_dotenv 已加载）
         self.api_key = self.api_key or os.environ.get("DEEPSEEK_API_KEY")
@@ -79,6 +86,7 @@ class DeepSeekLLM(LLMClient):
             raise ValueError("缺少 DEEPSEEK_API_KEY：请在 .env 配置或传入 api_key")
 
         # 3) 真正创建客户端（openai 延迟导入，避免未安装依赖时模块导入即失败）
+        self.async_client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=60.0)
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=60.0)
         return self  # 支持链式调用：DeepSeekLLM().init()
 
@@ -90,6 +98,32 @@ class DeepSeekLLM(LLMClient):
         tools = [self._to_tool_schema(t) for t in get_all_tools()]
         # 3) 调用 DeepSeek（OpenAI 兼容 chat/completions）
         resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=api_messages,
+            tools=tools,
+        )
+        # 4) 解析响应：有 tool_calls → 解析成 ToolCall 列表；否则 → 纯文本
+        message = resp.choices[0].message
+        if getattr(message, "tool_calls", None):
+            calls = []
+            for tc in message.tool_calls:
+                fn = tc.function
+                # arguments 是 JSON 字符串，必须 json.loads 还原成参数字典；
+                # 解析失败兜底为空参数字典（工具层会给出"参数不匹配"错误）
+                try:
+                    args = json.loads(fn.arguments) if fn.arguments else {}
+                except json.JSONDecodeError:
+                    args = {}
+                calls.append(ToolCall(name=fn.name, args=args, id=tc.id))
+            return LLMResponse(content=None, tool_calls=calls)
+        return LLMResponse(content=message.content, tool_calls=None)
+
+    async def async_generate(self, messages: list[dict]) -> LLMResponse:
+        api_messages = self._to_openai_messages(messages)
+        # 2) 工具注册表 → OpenAI tools 参数（function schema 列表）
+        tools = [self._to_tool_schema(t) for t in get_all_tools()]
+        # 3) 调用 DeepSeek（OpenAI 兼容 chat/completions）
+        resp = await self.async_client.chat.completions.create(
             model=self.model,
             messages=api_messages,
             tools=tools,
@@ -172,6 +206,25 @@ class MockLLM(LLMClient):
         pass
 
     def generate(self, messages: list[dict]) -> LLMResponse:
+        last = messages[-1] if messages else {}
+        if last.get("role") == "tool":
+            # 工具刚执行完：模拟 LLM 基于工具结果生成最终回复
+            content = str(last.get("content", ""))
+            return LLMResponse(content=f"好的，{content}", tool_calls=None)
+        last_user = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                last_user = str(msg.get("content", ""))
+                break
+        tool_name = route(last_user)
+        if tool_name:
+            return LLMResponse(
+                content=None,
+                tool_calls=[ToolCall(name=tool_name, args=extract_args(tool_name, last_user))],
+            )
+        return LLMResponse(content=self._plain_reply(last_user), tool_calls=None)
+
+    async def async_generate(self, messages: list[dict]) -> LLMResponse:
         last = messages[-1] if messages else {}
         if last.get("role") == "tool":
             # 工具刚执行完：模拟 LLM 基于工具结果生成最终回复

@@ -133,6 +133,10 @@ class MultiToolLLM(LLMClient):
             )
         return LLMResponse(content="全部完成", tool_calls=None)
 
+    # async 抽象方法契约：纯 sync 逻辑（无 IO），直接复用 generate 即可
+    async def async_generate(self, messages: list[dict]) -> LLMResponse:
+        return self.generate(messages)
+
 
 def test_todo_tool_call_via_mock_route():
     """MockLLM 路由到 todo 工具并执行：添加待办闭环（联网工具测试离线确定）。"""
