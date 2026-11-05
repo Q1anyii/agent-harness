@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { AiSegment } from '../types'
 import ToolCallCard from './ToolCallCard'
 
@@ -10,9 +12,9 @@ interface Props {
 // ⑥+② AI 消息块（穿插式）：按时间序渲染段列表——
 //   思考段（可折叠）→ 工具段（ToolCallCard 子组件）→ … → 最终回复文本段
 export default function AiMessageBox({ segments, streaming = false }: Props) {
-  // 打字机只作用于"最后一个文本段"：流式期间按帧推进已显示字符数
+  // 打字机只作用于"最后一个文本段"：流式期间每 50ms 推进 3 个字符
   const [shown, setShown] = useState(0)
-  const rafRef = useRef<number | null>(null)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const textSeg = [...segments].reverse().find((s) => s.type === 'text')
   const text = textSeg?.text ?? ''
 
@@ -22,20 +24,17 @@ export default function AiMessageBox({ segments, streaming = false }: Props) {
       return
     }
     // 文本增长（新事件批次到达）时继续推进，直到追上 text.length
-    const step = () => {
+    timerRef.current = setInterval(() => {
       setShown((prev) => {
         if (prev >= text.length) {
-          if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+          if (timerRef.current !== null) clearInterval(timerRef.current)
           return prev
         }
-        const next = Math.min(prev + 6, text.length)
-        rafRef.current = requestAnimationFrame(step)
-        return next
+        return Math.min(prev + 3, text.length)
       })
-    }
-    rafRef.current = requestAnimationFrame(step)
+    }, 50)
     return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+      if (timerRef.current !== null) clearInterval(timerRef.current)
     }
   }, [text, streaming])
 
@@ -61,7 +60,7 @@ export default function AiMessageBox({ segments, streaming = false }: Props) {
             const visible = streaming && isLastText ? segText.slice(0, shown) : segText
             return visible ? (
               <div key={seg.key} className="msg-content ai-content">
-                {visible}
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{visible}</ReactMarkdown>
               </div>
             ) : null
           }

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { AiBlock, AiSegment, ChatMessage } from '../types'
 import AiMessageBox from './AiMessageBox'
 
@@ -27,10 +28,13 @@ export interface RenderItem {
 export function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
   const items: RenderItem[] = []
   let i = 0
+  // key 用全局自增计数：AI 块会"消费"后续多条消息（tool/总结），若用消息索引做 key，
+  // 与下一条 user 消息的索引会重复，React 列表渲染错乱（新消息区显示旧回复）
+  let keySeq = 0
   while (i < messages.length) {
     const m = messages[i]
     if (m.role === 'user') {
-      items.push({ key: i, role: 'user', content: m.content ?? '', segments: [] })
+      items.push({ key: keySeq++, role: 'user', content: m.content ?? '', segments: [] })
       i++
       continue
     }
@@ -76,7 +80,7 @@ export function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
         }
         i++
       }
-      items.push({ key: i, role: 'assistant', content, segments })
+      items.push({ key: keySeq++, role: 'assistant', content, segments })
       continue
     }
     if (m.role === 'assistant') {
@@ -84,7 +88,7 @@ export function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
       const segments: AiSegment[] = []
       if (m.reasoning) segments.push({ type: 'reasoning', key: `r${i}`, reasoning: m.reasoning })
       if (m.content) segments.push({ type: 'text', key: `x${i}`, text: m.content })
-      items.push({ key: i, role: 'assistant', content: m.content ?? '', segments })
+      items.push({ key: keySeq++, role: 'assistant', content: m.content ?? '', segments })
       i++
       continue
     }
@@ -96,10 +100,18 @@ export function buildRenderItems(messages: ChatMessage[]): RenderItem[] {
 
 export default function ChatBox({ messages, streaming, input, busy, disabled, onInput, onSend }: Props) {
   const items = buildRenderItems(messages)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  // 消息窗口自动滚动：新消息/流式内容到达时滑动到底部（用户可手动回看历史）
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages, streaming])
+
   return (
     <div className="chat-box">
       <div className="chat-header">Agent 对话</div>
-      <div className="chat-messages">
+      <div className="chat-messages" ref={scrollRef}>
         {items.map((item) =>
           item.role === 'user' ? (
             <div key={item.key} className="msg msg-user">
@@ -110,7 +122,7 @@ export default function ChatBox({ messages, streaming, input, busy, disabled, on
             <AiMessageBox key={item.key} segments={item.segments} />
           ),
         )}
-        {streaming && <AiMessageBox segments={streaming.segments} streaming />}
+        {streaming && <AiMessageBox key="streaming" segments={streaming.segments} streaming />}
         {items.length === 0 && !streaming && <div className="chat-empty">输入消息，开始对话吧。</div>}
       </div>
       <div className="chat-input-row">

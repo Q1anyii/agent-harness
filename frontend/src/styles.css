@@ -400,11 +400,100 @@ body {
   word-break: break-all;
 }
 
-/* 流式中的 AI 回复文本 */
+/* 流式中的 AI 回复文本（Markdown 自管换行/段落） */
 .ai-content {
   background: #f7f8fa;
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: break-word;
+}
+
+/* Markdown 渲染排版（react-markdown + remark-gfm） */
+.ai-content h1,
+.ai-content h2,
+.ai-content h3,
+.ai-content h4 {
+  margin: 10px 0 6px;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.ai-content h1 {
+  font-size: 18px;
+}
+
+.ai-content h2 {
+  font-size: 16px;
+}
+
+.ai-content h3,
+.ai-content h4 {
+  font-size: 14px;
+}
+
+.ai-content p {
+  margin: 6px 0;
+}
+
+.ai-content ul,
+.ai-content ol {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+.ai-content li {
+  margin: 3px 0;
+}
+
+.ai-content blockquote {
+  margin: 6px 0;
+  padding: 2px 12px;
+  border-left: 3px solid #c9cdd4;
+  color: #4e5969;
+}
+
+.ai-content code {
+  background: #e5e6eb;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 12.5px;
+}
+
+.ai-content pre {
+  background: #1f2329;
+  color: #e5e6eb;
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.ai-content pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: 12.5px;
+  white-space: pre;
+}
+
+.ai-content table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.ai-content th,
+.ai-content td {
+  border: 1px solid #e5e6eb;
+  padding: 4px 10px;
+}
+
+.ai-content th {
+  background: #f2f3f5;
+}
+
+.ai-content a {
+  color: #3370ff;
 }
 
 .ai-thinking {
