@@ -1,0 +1,55 @@
+# ============================================================
+# .dockerignore — Docker 构建时排除的文件（对齐 Mitta 实践）
+# ============================================================
+
+# Git
+.git
+.gitignore
+.github
+
+# 环境变量（含密钥，不打包进镜像）
+.env
+*.env
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# 测试与 IDE
+.pytest_cache/
+tests/
+.idea/
+.vscode/
+*.iml
+
+# 前端（后端镜像不含前端；dist 由 compose 挂载进 nginx）
+frontend/
+node_modules/
+
+# 文档（可选，减小镜像体积）
+docs/
+*.md
+!README.md
+
+# 本地数据（SQLite 经 volume 挂载，不打包）
+data/
+
+# 日志与临时文件
+logs/
+*.log
+*.tmp
+*.bak
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker 自身与部署配置（nginx.conf 由 compose 挂载）
+Dockerfile
+docker-compose.yml
+.dockerignore
+deploy/
