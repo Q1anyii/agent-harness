@@ -25,9 +25,11 @@ tests/
 .vscode/
 *.iml
 
-# 前端（后端镜像不含前端；dist 由 compose 挂载进 nginx）
-frontend/
+# 前端依赖与产物（源码需进多阶段构建上下文，node_modules/dist 全局规则已覆盖）
 node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
 
 # 文档（可选，减小镜像体积）
 docs/
@@ -48,8 +50,7 @@ logs/
 Thumbs.db
 desktop.ini
 
-# Docker 自身与部署配置（nginx.conf 由 compose 挂载）
+# Docker 自身
 Dockerfile
 docker-compose.yml
 .dockerignore
-deploy/
