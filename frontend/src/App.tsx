@@ -172,12 +172,23 @@ export default function App() {
     setError(null)
     setMessages((prev) => [...prev, { role: 'user', content }])
     setInput('')
-    // 流式：先挂起空 AI 块（思考中），同时启动事件轮询
+    // 轮询锚点：取"发送前"的队列最新 seq——只消费本轮生成的事件，
+    // 避免 since=0 把历史事件（旧 reasoning/工具卡/回复）全量灌进新消息块造成错乱
+    let anchor = 0
+    try {
+      anchor = (await api.getEvents(currentId, 0)).latest_seq
+    } catch {
+      // 拿不到锚点（后端刚重启等）：从 0 开始，轮询失败由断连兜底
+    }
+    // 流式：先挂起空 AI 块（思考中），同时从锚点起启动事件轮询
     setStreaming({ segments: [], streaming: true })
-    seqRef.current = 0
+    seqRef.current = anchor
     startPolling(currentId)
     try {
-      await api.sendMessage(currentId, content)
+      const result = await api.sendMessage(currentId, content)
+      // 工具 trace 立即刷新（右侧面板无需手动刷新）
+      setTrace(result.trace)
+      storage.saveTrace(currentId, result.trace)
       // 生成完成：以服务端消息为准刷新全量（消息/工具调用已由 runtime 写回 session）
       const msgs = await api.getMessages(currentId)
       setMessages(msgs.messages)
