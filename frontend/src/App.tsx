@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './api'
 import { storage } from './storage'
-import type { ChatMessage, SessionInfo, TraceItem } from './types'
+import type { AiBlock, ChatMessage, SessionInfo, StreamEvent, TraceItem } from './types'
 import SessionList from './components/SessionList'
 import ChatBox from './components/ChatBox'
 import TracePanel from './components/TracePanel'
@@ -11,9 +11,21 @@ export default function App() {
   const [currentId, setCurrentId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [trace, setTrace] = useState<TraceItem[]>([])
+  const [streaming, setStreaming] = useState<AiBlock | null>(null)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // 流式轮询句柄与续拉锚点（④）：1s 级 setInterval，增量消费事件
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const seqRef = useRef(0)
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }, [])
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -26,21 +38,25 @@ export default function App() {
 
   useEffect(() => {
     void refreshSessions()
-  }, [refreshSessions])
+    return () => stopPolling()
+  }, [refreshSessions, stopPolling])
 
   // 自动选中：当前无会话时，自动选中列表第一个（配合后端惰性建会话，打开即用）
   useEffect(() => {
     if (!currentId && sessions.length > 0) {
       void selectSession(sessions[0].session_id)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessions, currentId])
 
   const createSession = async () => {
+    stopPolling()
     try {
       const s = await api.createSession()
       setCurrentId(s.session_id)
       setMessages([])
       setTrace([])
+      setStreaming(null)
       setError(null)
       void refreshSessions()
     } catch (e) {
@@ -49,6 +65,8 @@ export default function App() {
   }
 
   const selectSession = async (sid: string) => {
+    stopPolling()
+    setStreaming(null)
     setCurrentId(sid)
     setError(null)
     // 先渲染本地缓存（后端重启/刷新页面时历史不丢），再以后端为准刷新
@@ -79,9 +97,11 @@ export default function App() {
       storage.removeMessages(sid)
       storage.removeTrace(sid)
       if (currentId === sid) {
+        stopPolling()
         setCurrentId(null)
         setMessages([])
         setTrace([])
+        setStreaming(null)
       }
       setError(null)
       void refreshSessions()
@@ -90,6 +110,48 @@ export default function App() {
     }
   }
 
+  // 增量事件 → 组装进当前 AI 消息块（⑥ reasoning + ② 工具子组件 + 回复增量）
+  const applyEvents = useCallback((events: StreamEvent[]) => {
+    setStreaming((prev) => {
+      if (!prev) return prev
+      const next: AiBlock = { ...prev, toolCalls: [...prev.toolCalls] }
+      for (const ev of events) {
+        if (ev.type === 'reasoning') {
+          next.reasoning += ev.content ?? ''
+        } else if (ev.type === 'tool_call') {
+          next.toolCalls.push({ id: ev.id ?? '', name: ev.name ?? '', args: ev.args ?? {} })
+        } else if (ev.type === 'tool_result') {
+          const target = next.toolCalls.find((tc) => tc.id === ev.id)
+          if (target) {
+            target.result = ev.result
+            target.status = ev.status
+            target.duration_ms = ev.duration_ms
+          }
+        } else if (ev.type === 'message_delta') {
+          next.content += ev.delta ?? ''
+        }
+      }
+      return next
+    })
+  }, [])
+
+  // 启动 1s 级轮询：增量拉取事件；轮询失败静默（下轮重试），断连恢复靠全量刷新兜底
+  const startPolling = useCallback(
+    (sid: string) => {
+      stopPolling()
+      pollRef.current = setInterval(async () => {
+        try {
+          const res = await api.getEvents(sid, seqRef.current)
+          if (res.events.length > 0) applyEvents(res.events)
+          seqRef.current = res.latest_seq
+        } catch {
+          /* 轮询失败忽略：下个 tick 重试；生成完成后 POST 返回会停止轮询 */
+        }
+      }, 1000)
+    },
+    [applyEvents, stopPolling],
+  )
+
   const send = async () => {
     const content = input.trim()
     if (!content || !currentId || busy) return
@@ -97,18 +159,16 @@ export default function App() {
     setError(null)
     setMessages((prev) => [...prev, { role: 'user', content }])
     setInput('')
+    // 流式：先挂起空 AI 块（思考中），同时启动事件轮询
+    setStreaming({ reasoning: '', toolCalls: [], content: '', streaming: true })
+    seqRef.current = 0
+    startPolling(currentId)
     try {
-      const result = await api.sendMessage(currentId, content)
-      setMessages((prev) => {
-        const next: ChatMessage[] = [...prev, { role: 'assistant', content: result.reply }]
-        storage.saveMessages(currentId, next)
-        return next
-      })
-      setTrace((prev) => {
-        const next = [...prev, ...result.trace]
-        storage.saveTrace(currentId, next)
-        return next
-      })
+      await api.sendMessage(currentId, content)
+      // 生成完成：以服务端消息为准刷新全量（消息/工具调用已由 runtime 写回 session）
+      const msgs = await api.getMessages(currentId)
+      setMessages(msgs.messages)
+      storage.saveMessages(currentId, msgs.messages)
       void refreshSessions()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -124,6 +184,8 @@ export default function App() {
         setError(msg)
       }
     } finally {
+      stopPolling()
+      setStreaming(null)
       setBusy(false)
     }
   }
@@ -143,6 +205,7 @@ export default function App() {
         <div className="main-row">
           <ChatBox
             messages={messages}
+            streaming={streaming}
             input={input}
             busy={busy}
             onInput={setInput}

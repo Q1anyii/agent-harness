@@ -1,5 +1,5 @@
 // 后端 API 封装：所有请求走相对路径 /api，dev 模式下由 Vite proxy 转发到 FastAPI
-import type { ChatMessage, ChatResult, SessionInfo, TraceItem } from './types'
+import type { ChatMessage, ChatResult, EventsResponse, SessionInfo, TraceItem } from './types'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -32,4 +32,8 @@ export const api = {
 
   getTrace: (sid: string) =>
     request<{ trace: TraceItem[] }>(`/api/sessions/${sid}/trace`),
+
+  // 流式事件轮询（④）：since 为上次已消费的最大 seq，增量拉取
+  getEvents: (sid: string, since: number) =>
+    request<EventsResponse>(`/api/sessions/${sid}/events?since=${since}`),
 }
