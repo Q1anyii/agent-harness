@@ -37,10 +37,15 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class LLMResponse:
-    """LLM 一次决策的结果：要么给文本回复（tool_calls=None），要么给工具调用列表（content=None）。"""
+    """LLM 一次决策的结果：要么给文本回复（tool_calls=None），要么给工具调用列表（content=None）。
+
+    reasoning：思考过程文本（如 DeepSeek 的 reasoning_content），可为空；
+    前端把它渲染为 AI 消息块内的"思考过程"（⑥ reasoning，与②工具块一体）。
+    """
 
     content: str | None
     tool_calls: list[ToolCall] | None
+    reasoning: str | None = None
 
 
 class LLMClient(ABC):
@@ -102,8 +107,10 @@ class DeepSeekLLM(LLMClient):
             messages=api_messages,
             tools=tools,
         )
-        # 4) 解析响应：有 tool_calls → 解析成 ToolCall 列表；否则 → 纯文本
+        # 4) 解析响应：有 tool_calls → 解析成 ToolCall 列表；否则 → 纯文本。
+        #    reasoning_content（DeepSeek 思考过程）非空时一并带出。
         message = resp.choices[0].message
+        reasoning = getattr(message, "reasoning_content", None) or None
         if getattr(message, "tool_calls", None):
             calls = []
             for tc in message.tool_calls:
@@ -115,8 +122,8 @@ class DeepSeekLLM(LLMClient):
                 except json.JSONDecodeError:
                     args = {}
                 calls.append(ToolCall(name=fn.name, args=args, id=tc.id))
-            return LLMResponse(content=None, tool_calls=calls)
-        return LLMResponse(content=message.content, tool_calls=None)
+            return LLMResponse(content=None, tool_calls=calls, reasoning=reasoning)
+        return LLMResponse(content=message.content, tool_calls=None, reasoning=reasoning)
 
     async def async_generate(self, messages: list[dict]) -> LLMResponse:
         api_messages = self._to_openai_messages(messages)
@@ -130,6 +137,7 @@ class DeepSeekLLM(LLMClient):
         )
         # 4) 解析响应：有 tool_calls → 解析成 ToolCall 列表；否则 → 纯文本
         message = resp.choices[0].message
+        reasoning = getattr(message, "reasoning_content", None) or None
         if getattr(message, "tool_calls", None):
             calls = []
             for tc in message.tool_calls:
@@ -141,8 +149,8 @@ class DeepSeekLLM(LLMClient):
                 except json.JSONDecodeError:
                     args = {}
                 calls.append(ToolCall(name=fn.name, args=args, id=tc.id))
-            return LLMResponse(content=None, tool_calls=calls)
-        return LLMResponse(content=message.content, tool_calls=None)
+            return LLMResponse(content=None, tool_calls=calls, reasoning=reasoning)
+        return LLMResponse(content=message.content, tool_calls=None, reasoning=reasoning)
 
     @staticmethod
     def _to_openai_messages(messages: list[dict]) -> list[dict]:
@@ -210,7 +218,11 @@ class MockLLM(LLMClient):
         if last.get("role") == "tool":
             # 工具刚执行完：模拟 LLM 基于工具结果生成最终回复
             content = str(last.get("content", ""))
-            return LLMResponse(content=f"好的，{content}", tool_calls=None)
+            return LLMResponse(
+                content=f"好的，{content}",
+                tool_calls=None,
+                reasoning=f"已拿到工具返回「{content}」，据此组织最终回复。",
+            )
         last_user = ""
         for msg in reversed(messages):
             if msg.get("role") == "user":
@@ -221,15 +233,24 @@ class MockLLM(LLMClient):
             return LLMResponse(
                 content=None,
                 tool_calls=[ToolCall(name=tool_name, args=extract_args(tool_name, last_user))],
+                reasoning=f"用户请求「{last_user}」涉及{tool_name}，需要调用工具获取结果。",
             )
-        return LLMResponse(content=self._plain_reply(last_user), tool_calls=None)
+        return LLMResponse(
+            content=self._plain_reply(last_user),
+            tool_calls=None,
+            reasoning=f"用户请求「{last_user}」无需工具调用，直接组织文本回复。",
+        )
 
     async def async_generate(self, messages: list[dict]) -> LLMResponse:
         last = messages[-1] if messages else {}
         if last.get("role") == "tool":
             # 工具刚执行完：模拟 LLM 基于工具结果生成最终回复
             content = str(last.get("content", ""))
-            return LLMResponse(content=f"好的，{content}", tool_calls=None)
+            return LLMResponse(
+                content=f"好的，{content}",
+                tool_calls=None,
+                reasoning=f"已拿到工具返回「{content}」，据此组织最终回复。",
+            )
         last_user = ""
         for msg in reversed(messages):
             if msg.get("role") == "user":
@@ -240,8 +261,13 @@ class MockLLM(LLMClient):
             return LLMResponse(
                 content=None,
                 tool_calls=[ToolCall(name=tool_name, args=extract_args(tool_name, last_user))],
+                reasoning=f"用户请求「{last_user}」涉及{tool_name}，需要调用工具获取结果。",
             )
-        return LLMResponse(content=self._plain_reply(last_user), tool_calls=None)
+        return LLMResponse(
+            content=self._plain_reply(last_user),
+            tool_calls=None,
+            reasoning=f"用户请求「{last_user}」无需工具调用，直接组织文本回复。",
+        )
 
     @staticmethod
     def _plain_reply(query: str) -> str:
