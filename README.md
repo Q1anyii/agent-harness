@@ -4,6 +4,8 @@ A self-implementation agent harness project.
 
 自实现 Agent harness：FastAPI 后端 + Vite/React/TS 前端，无外部 Agent 框架，自实现类 LangGraph 的循环、节点、状态机与 Runtime。
 
+![](./assets/demo.png)
+
 ## 功能
 
 - **主循环**：接收输入 → 判断直接回复/调用工具 → 调用工具 → 继续/终止（单次问答轮次上限 8）
@@ -67,7 +69,7 @@ docker compose up -d --build
 - `api`：后端镜像（`Dockerfile`，python:3.12-slim，非 root 运行，healthcheck 探活 `/api/health`）；
 - `nginx`：前端镜像（`frontend/Dockerfile` **多阶段**——stage1 node:20-alpine 内 `npm ci && npm run build` 出 dist，stage2 nginx:1.27-alpine 只拷 dist 与反代配置，自包含无挂载）。
 
-关键点（面试可讲）：
+关键点：
 
 - **多阶段构建**：构建产物只存在于中间层，最终镜像不含 node/源码，体积小、宿主零 Node 依赖；
 - **`proxy_buffering off`**：本项目流式输出走 `/api/.../events` 轮询 + `message_delta` 增量，nginx 缓冲会攒满才转发导致延迟/粘包；
