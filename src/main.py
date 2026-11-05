@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from agent.llm import DeepSeekLLM, MockLLM
 from agent.events import InMemoryQueue
 from agent.log import LogRecord, LogStore, MemoryLogStore, SQLiteLogStore
+from agent.memory import BM25Memory
 from agent.runtime import AgentRuntime
 from agent.session import (
     SessionBusyError,
@@ -125,14 +126,19 @@ if store_type == "sqlite":
 else:
     manager = SessionManager()
 
+# 长期记忆（⑦）：BM25 检索 + 乘法衰减（内存实现，插件化策略可换 SQLite/向量）
+memory = BM25Memory()
+
 # LLM 后端切换：LLM_BACKEND=deepseek 走真实 DeepSeek，默认 mock 保证测试与演示稳定
 backend = os.environ.get("LLM_BACKEND", "mock")
 if backend == "deepseek":
     runtime = AgentRuntime(
-        llm=DeepSeekLLM().init(), max_rounds=8, queue=event_queue
+        llm=DeepSeekLLM().init(), max_rounds=8, queue=event_queue, memory=memory
     )
 else:
-    runtime = AgentRuntime(llm=MockLLM(), max_rounds=8, queue=event_queue)
+    runtime = AgentRuntime(
+        llm=MockLLM(), max_rounds=8, queue=event_queue, memory=memory
+    )
 
 
 class ChatRequest(BaseModel):
@@ -173,6 +179,7 @@ def delete_session(session_id: str) -> None:
     try:
         manager.remove(session_id)
         event_queue.clear(session_id)  # 同步清理该会话的流式事件，防内存泄漏
+        memory.forget(session_id)  # 同步清理该会话的长期记忆，防内存泄漏
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="会话不存在")
 

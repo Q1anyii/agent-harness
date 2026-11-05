@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from agent.context import build_system_prompt, trim_messages
 from agent.events import EventQueue
 from agent.llm import LLMClient, LLMResponse
+from agent.memory import MemoryStrategy
 from agent.session import Session, SessionBusyError
 from agent.tools import get_all_tools, get_tool
 
@@ -33,7 +34,9 @@ class AgentRuntime:
 
     def __init__(self, llm: LLMClient, max_rounds: int = 8,
                  max_context_tokens: int = 4000,
-                 queue: EventQueue | None = None) -> None:
+                 queue: EventQueue | None = None,
+                 memory: MemoryStrategy | None = None,
+                 memory_recall_k: int = 10) -> None:
         self.llm = llm
         self.max_rounds = max_rounds
         # context 窗口上限：估算 token 超限时从最旧裁剪（见 agent/context.py）
@@ -41,17 +44,30 @@ class AgentRuntime:
         # 流式事件队列：传入则生成过程事件（reasoning/工具调用/回复增量）实时入队，
         # 前端轮询消费；不传则静默跳过（既有 sync 测试零影响）
         self.queue = queue
+        # 长期记忆（⑦）：传入则每轮 QA 落库 + 本轮提问召回 top-k 拼入 system。
+        # 默认 None：不配即无记忆（既有测试零影响），插件化策略可换实现。
+        self.memory = memory
+        self.memory_recall_k = memory_recall_k
 
     def _build_messages(self, session: Session, user_content: str) -> list[dict]:
         """构造发给 LLM 的消息列表：system prompt（会话级，首次构造后复用）
-        + 对话历史 + 本轮 user 提问，最后做 context 窗口裁剪。"""
+        + 长期记忆召回段（每轮动态）+ 对话历史 + 本轮 user 提问，最后做窗口裁剪。"""
         messages: list[dict] = list(session.messages)
         # system prompt：会话开始时构造一次（含可用工具与当前时间），之后复用
         if not session.system_prompt:
             session.system_prompt = build_system_prompt(
                 [t.name for t in get_all_tools()]
             )
-        messages.insert(0, {"role": "system", "content": session.system_prompt})
+        system = session.system_prompt
+        # 长期记忆召回（⑦）：以当前提问为 query 检索 top-k 相关记忆，
+        # 拼入"本次请求"的 system（动态段，不写回缓存的 session.system_prompt）。
+        # 短期窗口裁掉的历史信息可经此召回，形成"短期窗口 + 长期记忆"闭环。
+        if self.memory:
+            hits = self.memory.recall(user_content, k=self.memory_recall_k, session_id=session.session_id)
+            if hits:
+                memories_text = "\n".join(f"- {e.content}" for e in hits)
+                system += "\n\n【长期记忆（历史问答，仅供参考）】\n" + memories_text
+        messages.insert(0, {"role": "system", "content": system})
         messages.append({"role": "user", "content": user_content})
         # 上下文膨胀压缩：保留 system + 最近消息，最后一条 user 无条件保留
         return trim_messages(messages, self.max_context_tokens)
@@ -135,6 +151,13 @@ class AgentRuntime:
 
             # 5a) 流式输出：最终回复切成增量块入队（前端逐块渲染，done 标记收尾）
             self._publish_reply(session.session_id, reply)
+
+            # 5b) 长期记忆落库（⑦）：本轮 QA 合并为一条记忆，供后续提问召回。
+            #     短期窗口裁掉的信息不丢，可经长期记忆重新进入上下文。
+            if self.memory:
+                self.memory.remember(
+                    session.session_id, f"Q: {user_content}\nA: {reply}"
+                )
 
             # 6) 把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
             #    system prompt 是运行时注入的上下文，不写入对话历史（存储保持干净）
@@ -241,6 +264,13 @@ class AgentRuntime:
 
             # 5a) 流式输出：最终回复切成增量块入队（前端逐块渲染，done 标记收尾）
             self._publish_reply(session.session_id, reply)
+
+            # 5b) 长期记忆落库（⑦）：本轮 QA 合并为一条记忆，供后续提问召回。
+            #     短期窗口裁掉的信息不丢，可经长期记忆重新进入上下文。
+            if self.memory:
+                self.memory.remember(
+                    session.session_id, f"Q: {user_content}\nA: {reply}"
+                )
 
             # 6) 把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
             #    system prompt 是运行时注入的上下文，不写入对话历史（存储保持干净）
