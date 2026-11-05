@@ -270,6 +270,61 @@
           }
         }
       }
+    },
+    "/api/sessions/{session_id}/events": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Get Events",
+        "description": "流式事件轮询端点（④）：返回 seq > since 的增量事件。\n\n前端 1s 级 setInterval 轮询；断连后先刷新 /messages 全量，再以\nsince=最新 seq 续拉增量。since=0 返回队列内全部事件。",
+        "operationId": "get_events_api_sessions__session_id__events_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Since"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Events Api Sessions  Session Id  Events Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {

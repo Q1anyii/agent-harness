@@ -308,3 +308,107 @@ body {
   color: #f53f3f;
   font-size: 13px;
 }
+
+/* ---------- ②⑥ AI 消息块：思考过程 + 工具子组件 + 回复 ---------- */
+
+.msg-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* 思考过程（可折叠） */
+.reasoning-box {
+  border: 1px dashed #c9cdd4;
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: #fafbfc;
+  font-size: 13px;
+  color: #4e5969;
+}
+
+.reasoning-box summary {
+  cursor: pointer;
+  color: #86909c;
+  font-size: 12px;
+  user-select: none;
+}
+
+.reasoning-content {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 工具调用子组件列表 */
+.tool-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-card {
+  border: 1px solid #e5e6eb;
+  border-left: 3px solid #3370ff;
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: #f7f8fa;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-card-error {
+  border-left-color: #f53f3f;
+  background: #fff3f3;
+}
+
+.tool-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-card-name {
+  font-weight: 600;
+}
+
+.tool-card-duration {
+  color: #86909c;
+  font-size: 12px;
+}
+
+.tool-card-status {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #e8ffea;
+  color: #00b42a;
+}
+
+.tool-card-status-error {
+  background: #ffece8;
+  color: #f53f3f;
+}
+
+.tool-card-args,
+.tool-card-result {
+  color: #4e5969;
+  word-break: break-all;
+}
+
+/* 流式中的 AI 回复文本 */
+.ai-content {
+  background: #f7f8fa;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ai-thinking {
+  color: #86909c;
+  font-size: 13px;
+  padding: 4px 0;
+}
