@@ -26,7 +26,7 @@ A self-implementation agent harness project.
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 # 默认 Mock 模式启动（8000 端口，可用 PORT 覆盖）
 python src/main.py
-# 接入真实 DeepSeek：先配置 .env（DEEPSEEK_API_KEY / BASE_URL / MODEL_NAME），再
+# 接入真实 DeepSeek：参考 .env.example 创建 .env（DEEPSEEK_API_KEY / BASE_URL / MODEL_NAME），再
 $env:LLM_BACKEND = "deepseek"
 python src/main.py
 # 可选：SQLite 落库持久化（会话/消息/trace 与请求日志，默认内存）
