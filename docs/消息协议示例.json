@@ -1,0 +1,290 @@
+{
+  "_说明": "OpenAI 兼容 Chat Completions 协议下 messages 数组里可能出现的全部消息形态，以及本项目内部落库形态与出网形态的对照。字段与 src/agent/runtime.py、src/agent/llm.py._to_openai_messages 的实际实现一致。",
+  "_两条硬规则": [
+    "function.arguments 必须是 JSON 字符串，不是对象；工具参数 dict 要 json.dumps。",
+    "tool 消息的 tool_call_id 必须回显 assistant 决策消息里同一个 id，且每条 tool_call 都要有一条对应 tool 消息，缺一条即 400。"
+  ],
+  "message_forms": [
+    {
+      "case": "system",
+      "note": "会话级固定提示词，每轮只有一条且在最前；本项目在 session.system_prompt 首次构造后复用。",
+      "raw": {
+        "role": "system",
+        "content": "你是助手，可用工具：calculator / search / todo / weather。当前时间 2026-11-07。"
+      }
+    },
+    {
+      "case": "user",
+      "note": "本轮提问，位于历史之后、请求末尾。",
+      "raw": {
+        "role": "user",
+        "content": "南昌和北京今天天气怎么样"
+      }
+    },
+    {
+      "case": "assistant_text",
+      "note": "模型直接给出最终回复，不带 tool_calls。",
+      "raw": {
+        "role": "assistant",
+        "content": "南昌多云 18–25℃，北京晴 5–14℃。"
+      }
+    },
+    {
+      "case": "assistant_tool_calls",
+      "note": "模型决定调工具：content 为 null，tool_calls 为数组，可同时挂多条（并行调用）。",
+      "raw": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_abc123",
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "arguments": "{\"city\":\"南昌\"}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "case": "tool",
+      "note": "工具结果回填：只有 role / tool_call_id / content 三个字段，content 是字符串（dict 需先序列化）。",
+      "raw": {
+        "role": "tool",
+        "tool_call_id": "call_abc123",
+        "content": "{\"city\":\"南昌\",\"text\":\"多云 18-25℃\"}"
+      }
+    }
+  ],
+  "example_full_messages": {
+    "note": "一轮含并行两工具的完整 messages 数组（真正 POST 给 LLM 的形态）。两条 tool 消息顺序无关，id 是键。",
+    "messages": [
+      {
+        "role": "system",
+        "content": "你是助手，可用工具：weather。"
+      },
+      {
+        "role": "user",
+        "content": "南昌和北京今天天气"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "arguments": "{\"city\":\"南昌\"}"
+            }
+          },
+          {
+            "id": "call_2",
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "arguments": "{\"city\":\"北京\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "{\"city\":\"南昌\",\"text\":\"多云 18-25℃\"}"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_2",
+        "content": "{\"city\":\"北京\",\"text\":\"晴 5-14℃\"}"
+      },
+      {
+        "role": "assistant",
+        "content": "南昌多云 18–25℃，北京晴 5–14℃。"
+      }
+    ]
+  },
+  "internal_vs_outbound": {
+    "note": "本项目 session.messages 里存的是内部富结构（多出 reasoning、tool 消息多出 name）；出网前 _to_openai_messages 剥成协议最小集。内部 tool_calls 的 name/arguments 是扁平的，出网时再包成 function 对象。",
+    "cases": [
+      {
+        "case": "assistant 决策消息",
+        "internal": {
+          "role": "assistant",
+          "content": null,
+          "reasoning": "用户问两地天气，需要先调 weather 两次再汇总。",
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "name": "weather",
+              "arguments": "{\"city\":\"南昌\"}"
+            },
+            {
+              "id": "call_2",
+              "name": "weather",
+              "arguments": "{\"city\":\"北京\"}"
+            }
+          ]
+        },
+        "outbound": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "type": "function",
+              "function": {
+                "name": "weather",
+                "arguments": "{\"city\":\"南昌\"}"
+              }
+            },
+            {
+              "id": "call_2",
+              "type": "function",
+              "function": {
+                "name": "weather",
+                "arguments": "{\"city\":\"北京\"}"
+              }
+            }
+          ]
+        },
+        "difference": "出网丢弃 reasoning；tool_calls 由扁平 {id,name,arguments} 包成 {id,type,function:{name,arguments}}。"
+      },
+      {
+        "case": "tool 结果消息",
+        "internal": {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "name": "weather",
+          "content": "{\"city\":\"南昌\",\"text\":\"多云 18-25℃\"}"
+        },
+        "outbound": {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "{\"city\":\"南昌\",\"text\":\"多云 18-25℃\"}"
+        },
+        "difference": "出网丢弃 name；协议只认 tool_call_id。"
+      },
+      {
+        "case": "普通 assistant 回复",
+        "internal": {
+          "role": "assistant",
+          "content": "南昌多云 18–25℃。",
+          "reasoning": "已拿到两条工具结果，直接汇总。"
+        },
+        "outbound": {
+          "role": "assistant",
+          "content": "南昌多云 18–25℃。"
+        },
+        "difference": "出网丢弃 reasoning；原始判断只留 content。"
+      }
+    ]
+  },
+  "streaming_chunks": {
+    "note": "流式下 tool_calls 是分片增量：id 与 name 只在首片出现，arguments 是字符串追加。已省略 id/object/created/model 等元字段。",
+    "chunks": [
+      {
+        "seq": 1,
+        "chunk": {
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": ""
+                    }
+                  }
+                ]
+              },
+              "finish_reason": null
+            }
+          ]
+        }
+      },
+      {
+        "seq": 2,
+        "chunk": {
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "function": {
+                      "arguments": "{\"city\":"
+                    }
+                  }
+                ]
+              },
+              "finish_reason": null
+            }
+          ]
+        }
+      },
+      {
+        "seq": 3,
+        "chunk": {
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "function": {
+                      "arguments": "\"南昌\"}"
+                    }
+                  }
+                ]
+              },
+              "finish_reason": "tool_calls"
+            }
+          ]
+        }
+      }
+    ],
+    "拼装结果": {
+      "id": "call_abc123",
+      "type": "function",
+      "function": {
+        "name": "weather",
+        "arguments": "{\"city\":\"南昌\"}"
+      }
+    }
+  },
+  "sse_events": {
+    "note": "本项目自有事件（不是 OpenAI 协议），用于前端流式渲染；按 session 的事件队列按 seq 增量消费。",
+    "events": [
+      {
+        "type": "reasoning",
+        "content": "用户问两地天气，需要先调 weather 两次再汇总。"
+      },
+      {
+        "type": "tool_call",
+        "id": "call_1",
+        "name": "weather",
+        "args": {
+          "city": "南昌"
+        }
+      },
+      {
+        "type": "tool_result",
+        "id": "call_1",
+        "name": "weather",
+        "result": "{\"city\":\"南昌\",\"text\":\"多云 18-25℃\"}",
+        "status": "ok",
+        "duration_ms": 412
+      }
+    ]
+  }
+}
