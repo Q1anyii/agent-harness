@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import httpx
 
+from agent.constants import HTTP_TIMEOUT_SECONDS
+
 from .base import Tool, register
 
-_TIMEOUT_SECONDS = 10.0
+_TIMEOUT_SECONDS = HTTP_TIMEOUT_SECONDS
 
 
 def _fetch(city: str) -> dict | None:

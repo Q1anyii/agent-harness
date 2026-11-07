@@ -9,10 +9,12 @@ from __future__ import annotations
 import httpx
 from bs4 import BeautifulSoup
 
+from agent.constants import HTTP_TIMEOUT_SECONDS, SEARCH_MAX_RESULTS
+
 from .base import Tool, register
 
-_TIMEOUT_SECONDS = 10.0
-_MAX_RESULTS = 5
+_TIMEOUT_SECONDS = HTTP_TIMEOUT_SECONDS
+_MAX_RESULTS = SEARCH_MAX_RESULTS
 
 
 def _fetch(query: str) -> list[dict] | None:

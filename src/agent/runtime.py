@@ -7,6 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass
 
+from agent.constants import MAX_CONTEXT_TOKENS, MAX_ROUNDS, MEMORY_RECALL_K
 from agent.context import build_system_prompt, trim_messages
 from agent.events import EventQueue
 from agent.llm import LLMClient, LLMResponse
@@ -32,11 +33,11 @@ class AgentRuntime:
     Step4 根据工具结果判断继续 loop 还是返回给用户
     """
 
-    def __init__(self, llm: LLMClient, max_rounds: int = 8,
-                 max_context_tokens: int = 4000,
+    def __init__(self, llm: LLMClient, max_rounds: int = MAX_ROUNDS,
+                 max_context_tokens: int = MAX_CONTEXT_TOKENS,
                  queue: EventQueue | None = None,
                  memory: MemoryStrategy | None = None,
-                 memory_recall_k: int = 10,
+                 memory_recall_k: int = MEMORY_RECALL_K,
                  memory_extractor: MemoryExtractor | None = None) -> None:
         self.llm = llm
         self.max_rounds = max_rounds

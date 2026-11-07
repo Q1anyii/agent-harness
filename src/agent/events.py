@@ -22,6 +22,8 @@ import threading
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 
+from agent.constants import EVENTS_MAX_PER_SESSION
+
 
 class EventQueue(ABC):
     """流式事件队列抽象：实现可换（内存 / 未来 Redis Stream 等）。"""
@@ -52,7 +54,7 @@ class InMemoryQueue(EventQueue):
       窗口外的旧事件由"断连先全量刷新"兜底。
     """
 
-    def __init__(self, max_per_session: int = 500) -> None:
+    def __init__(self, max_per_session: int = EVENTS_MAX_PER_SESSION) -> None:
         self._events: dict[str, deque] = defaultdict(deque)
         self._seqs: dict[str, int] = defaultdict(int)
         self._lock = threading.Lock()

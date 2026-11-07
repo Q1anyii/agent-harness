@@ -20,6 +20,12 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from agent.constants import (
+    DEFAULT_PORT,
+    DEFAULT_SESSION_DB,
+    MAX_CONTEXT_TOKENS,
+    MAX_ROUNDS,
+)
 from agent.llm import DeepSeekLLM, MockLLM
 from agent.events import InMemoryQueue
 from agent.log import LogRecord, LogStore, MemoryLogStore, SQLiteLogStore
@@ -76,7 +82,7 @@ def _session_id_from_path(path: str) -> str:
 # 与 SESSION_STORE 独立开关：日志关注点独立，可分别控制
 log_store_type = os.environ.get("LOG_STORE", "memory")
 if log_store_type == "sqlite":
-    log_store: LogStore = SQLiteLogStore(os.environ.get("SESSION_DB", "data/agent-harness.db"))
+    log_store: LogStore = SQLiteLogStore(os.environ.get("SESSION_DB", DEFAULT_SESSION_DB))
 else:
     log_store = MemoryLogStore()
 
@@ -122,7 +128,7 @@ event_queue = InMemoryQueue()
 #              | sqlite（落库持久化，真实运行：$env:SESSION_STORE="sqlite"）
 store_type = os.environ.get("SESSION_STORE", "memory")
 if store_type == "sqlite":
-    manager = SQLiteSessionStore(os.environ.get("SESSION_DB", "data/agent-harness.db"))
+    manager = SQLiteSessionStore(os.environ.get("SESSION_DB", DEFAULT_SESSION_DB))
 else:
     manager = SessionManager()
 
@@ -141,10 +147,11 @@ memory_extractor = MemoryExtractor(llm)
 
 runtime = AgentRuntime(
     llm=llm,
-    max_rounds=8,
+    max_rounds=MAX_ROUNDS,
     queue=event_queue,
     memory=memory,
     memory_extractor=memory_extractor,
+    max_context_tokens=MAX_CONTEXT_TOKENS,
 )
 
 
@@ -259,7 +266,7 @@ def get_events(session_id: str, since: int = 0) -> dict:
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8000"))
+    port = int(os.environ.get("PORT", str(DEFAULT_PORT)))
     # 注意：Windows 上若端口处于 Hyper-V/WSL2 保留段（7449-8248）会报 WinError 10013，
     # 此时用 PORT 环境变量换端口，如：$env:PORT=18000
     uvicorn.run(app, host="0.0.0.0", port=port)
