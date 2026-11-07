@@ -12,6 +12,7 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from agent.constants import LLM_TIMEOUT_SECONDS
 from agent.router import extract_args, route
 from agent.tools import get_all_tools
 from dotenv import load_dotenv
@@ -91,8 +92,8 @@ class DeepSeekLLM(LLMClient):
             raise ValueError("缺少 DEEPSEEK_API_KEY：请在 .env 配置或传入 api_key")
 
         # 3) 真正创建客户端（openai 延迟导入，避免未安装依赖时模块导入即失败）
-        self.async_client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=60.0)
-        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=60.0)
+        self.async_client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=LLM_TIMEOUT_SECONDS)
+        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=LLM_TIMEOUT_SECONDS)
         return self  # 支持链式调用：DeepSeekLLM().init()
 
     def generate(self, messages: list[dict]) -> LLMResponse:

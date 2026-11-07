@@ -15,6 +15,7 @@ import sqlite3
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from agent.constants import LOG_LIST_LIMIT
 from agent.session import connect_sqlite, sqlite_transaction
 
 
@@ -38,7 +39,7 @@ class LogStore(ABC):
     def append(self, record: LogRecord) -> None: ...
 
     @abstractmethod
-    def list(self, limit: int = 200) -> list[LogRecord]: ...
+    def list(self, limit: int = LOG_LIST_LIMIT) -> list[LogRecord]: ...
 
 
 class MemoryLogStore(LogStore):
@@ -50,7 +51,7 @@ class MemoryLogStore(LogStore):
     def append(self, record: LogRecord) -> None:
         self._records.append(record)
 
-    def list(self, limit: int = 200) -> list[LogRecord]:
+    def list(self, limit: int = LOG_LIST_LIMIT) -> list[LogRecord]:
         return list(reversed(self._records[-limit:]))
 
 
@@ -95,7 +96,7 @@ class SQLiteLogStore(LogStore):
                 ),
             )
 
-    def list(self, limit: int = 200) -> list[LogRecord]:
+    def list(self, limit: int = LOG_LIST_LIMIT) -> list[LogRecord]:
         with sqlite_transaction(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT ts, method, path, session_id, status, duration_ms, error"

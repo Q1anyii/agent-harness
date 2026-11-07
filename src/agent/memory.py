@@ -25,6 +25,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from agent.constants import (
+    BM25_B,
+    BM25_K1,
+    MEMORY_DECAY_FACTOR,
+    MEMORY_EXTRACT_RECENT_K,
+    MEMORY_RECALL_K,
+)
 from agent.llm import LLMClient
 
 
@@ -50,7 +57,7 @@ class MemoryStrategy(ABC):
 
     @abstractmethod
     def recall(
-        self, query: str, k: int = 10, session_id: str | None = None
+        self, query: str, k: int = MEMORY_RECALL_K, session_id: str | None = None
     ) -> list[MemoryEntry]: ...
 
     @abstractmethod
@@ -61,10 +68,10 @@ class BM25Memory(MemoryStrategy):
     """BM25 检索 + 乘法衰减的内存实现（本地规模；存储可后续换 SQLite）。"""
 
     # Okapi BM25 标准参数：k1 控制词频饱和，b 控制文档长度归一化强度
-    K1 = 1.5
-    B = 0.75
+    K1 = BM25_K1
+    B = BM25_B
 
-    def __init__(self, decay_factor: float = 0.9) -> None:
+    def __init__(self, decay_factor: float = MEMORY_DECAY_FACTOR) -> None:
         self._entries: list[MemoryEntry] = []
         self.decay_factor = decay_factor  # 每次命中衰减倍率（0~1）
 
@@ -92,7 +99,7 @@ class BM25Memory(MemoryStrategy):
         return hashlib.md5(text.encode("utf-8")).hexdigest()
 
     def recall(
-        self, query: str, k: int = 10, session_id: str | None = None
+        self, query: str, k: int = MEMORY_RECALL_K, session_id: str | None = None
     ) -> list[MemoryEntry]:
         """检索与 query 最相关的 k 条记忆（按 衰减后分数 降序）。
 
@@ -211,7 +218,7 @@ class MemoryExtractor:
     保证记忆写入永远可用（对齐 Mitta「记忆是优化而非硬依赖」哲学）。
     """
 
-    def __init__(self, llm: LLMClient, recent_k: int = 10) -> None:
+    def __init__(self, llm: LLMClient, recent_k: int = MEMORY_EXTRACT_RECENT_K) -> None:
         self.llm = llm
         self.recent_k = recent_k  # 提取上下文携带的最近消息条数（Mem0 P0 的 limit=10）
 

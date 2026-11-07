@@ -11,14 +11,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from agent.constants import CHARS_PER_TOKEN
+
 
 def estimate_tokens(text: str) -> int:
     """粗略 token 估算（无分词器时的保守折中）。"""
     if not text:
         return 0
     # 中文/日文等 CJK 字符约 1 字 ≈ 1 token；英文约 4 字符 ≈ 1 token。
-    # 简单折中：字符数 // 2 偏保守（宁可多估，避免超窗）。
-    return max(1, len(text) // 2)
+    # 简单折中：字符数 // CHARS_PER_TOKEN 偏保守（宁可多估，避免超窗）。
+    return max(1, len(text) // CHARS_PER_TOKEN)
 
 
 def build_system_prompt(tool_names: list[str], now: str | None = None) -> str:
