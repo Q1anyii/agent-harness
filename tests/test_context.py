@@ -77,3 +77,68 @@ def test_trim_single_oversized_message_kept():
     out = trim_messages(msgs, max_tokens=10)
     assert len(out) == 1
     assert out[0]["content"] == "长" * 5000
+
+
+# ---------- 窗口裁剪：工具链成组 ----------
+
+def _has_orphan_tool(messages: list[dict]) -> bool:
+    """输出中是否存在找不到对应 tool_calls 的 tool 消息（会触发 API 400）。"""
+    call_ids = set()
+    for m in messages:
+        if m.get("role") == "assistant":
+            for call in m.get("tool_calls") or []:
+                call_ids.add(call.get("id"))
+        elif m.get("role") == "tool" and m.get("tool_call_id") not in call_ids:
+            return True
+    return False
+
+
+def _tool_group(call_id: str, arguments: str, result: str) -> list[dict]:
+    return [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "weather", "arguments": arguments},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": call_id, "content": result},
+    ]
+
+
+def test_trim_keeps_tool_group_atomic():
+    """预算卡在工具组中间时整组丢弃，不产生孤立 tool 消息。"""
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "查天气"},
+        *_tool_group("c1", '{"city":"南昌"}', "晴 20 度"),
+        {"role": "assistant", "content": "南昌今天晴，20 度"},
+        {"role": "user", "content": "那北京呢"},
+    ]
+    out = trim_messages(msgs, max_tokens=10)
+    assert out[0]["role"] == "system"
+    assert out[-1]["content"] == "那北京呢"
+    assert not _has_orphan_tool(out)
+    assert not any(m.get("role") == "tool" for m in out)
+
+
+def test_trim_counts_tool_arguments():
+    """tool_calls 的 arguments 计入成本：参数长时整组被裁，参数短时保留。"""
+    short = [
+        {"role": "system", "content": "s"},
+        *_tool_group("c1", "{}", "结果"),
+        {"role": "user", "content": "问题"},
+    ]
+    long = [
+        {"role": "system", "content": "s"},
+        *_tool_group("c1", '{"q":"' + "长" * 200 + '"}', "结果"),
+        {"role": "user", "content": "问题"},
+    ]
+    out_short = trim_messages(short, max_tokens=20)
+    out_long = trim_messages(long, max_tokens=20)
+    assert any(m.get("role") == "tool" for m in out_short)
+    assert not any(m.get("role") == "tool" for m in out_long)
