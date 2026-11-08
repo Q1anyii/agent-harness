@@ -68,6 +68,13 @@ def _make_llm(*responses: FakeResponse) -> DeepSeekLLM:
     """构造注入 fake client 的 DeepSeekLLM（不走 init()，不联网、不用真 key）。"""
     llm = DeepSeekLLM(model="test-model")
     llm.client = FakeClient(*responses)
+
+    # run() 现在经 asyncio.run(async_run) → async_generate；测试只伪造了同步
+    # client，这里让 async 路径复用同一套同步解析逻辑（协议解析仍走真实代码路径）。
+    async def _async_generate(messages):
+        return llm.generate(messages)
+
+    llm.async_generate = _async_generate  # type: ignore[method-assign]
     return llm
 
 

@@ -46,7 +46,7 @@ def evaluate(expression: str) -> float:
         raise ZeroDivisionError("除数不能为 0") from e
 
 
-def run(expression: str) -> str:
+async def run(expression: str) -> str:
     try:
         value = evaluate(expression)
     except ZeroDivisionError:

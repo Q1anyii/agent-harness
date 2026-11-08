@@ -17,25 +17,26 @@ from .base import Tool, register
 _TIMEOUT_SECONDS = HTTP_TIMEOUT_SECONDS
 
 
-def _fetch(city: str) -> dict | None:
+async def _fetch(city: str) -> dict | None:
     """请求 wttr.in 并解析出当前天气字段；网络失败/超时/解析失败返回 None。"""
     try:
-        resp = httpx.get(f"https://wttr.in/{city}?format=j1", timeout=_TIMEOUT_SECONDS)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("current_condition", [{}])[0] or {}
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+            resp = await client.get(f"https://wttr.in/{city}?format=j1")
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("current_condition", [{}])[0] or {}
     except (httpx.HTTPError, ValueError):
         return None
 
 
-def run(city: str) -> str:
+async def run(city: str) -> str:
     # 1) 参数校验：空城市直接报错（Mock 路由也可能抽出空串）
     if city is None or not str(city).strip():
         return "错误：请指定要查询的城市"
     name = str(city).strip()
 
     # 2) 联网查询当前天气
-    cond = _fetch(name)
+    cond = await _fetch(name)
     if cond is None:
         return f"天气查询（联网）：暂时无法获取「{name}」的天气（网络或服务异常），请稍后再试"
 

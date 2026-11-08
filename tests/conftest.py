@@ -21,14 +21,20 @@ def _offline_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     import agent.tools.search as search_mod
     import agent.tools.weather as weather_mod
 
-    monkeypatch.setattr(weather_mod, "_fetch", lambda city: {
-        "lang_zh": [{"value": "晴"}],
-        "temp_C": "9",
-        "humidity": "59",
-        "winddir16Point": "西北",
-        "windspeedKmph": "11",
-    })
-    monkeypatch.setattr(search_mod, "_fetch", lambda query: [
-        {"title": f"{query} 相关结果一", "snippet": "这是摘要一"},
-        {"title": f"{query} 相关结果二", "snippet": "这是摘要二"},
-    ])
+    async def _fake_weather(city: str):
+        return {
+            "lang_zh": [{"value": "晴"}],
+            "temp_C": "9",
+            "humidity": "59",
+            "winddir16Point": "西北",
+            "windspeedKmph": "11",
+        }
+
+    async def _fake_search(query: str):
+        return [
+            {"title": f"{query} 相关结果一", "snippet": "这是摘要一"},
+            {"title": f"{query} 相关结果二", "snippet": "这是摘要二"},
+        ]
+
+    monkeypatch.setattr(weather_mod, "_fetch", _fake_weather)
+    monkeypatch.setattr(search_mod, "_fetch", _fake_search)

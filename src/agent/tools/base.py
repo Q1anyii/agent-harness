@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 
 @dataclass(frozen=True)
@@ -15,7 +15,7 @@ class Tool:
     name: str
     description: str
     parameters: dict[str, Any]
-    handler: Callable[..., str]
+    handler: Callable[..., Awaitable[str]]
 
 
 TOOL_REGISTRY: dict[str, Tool] = {}

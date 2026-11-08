@@ -23,7 +23,7 @@ def _format_list(todos: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def run(action: str, text: str | None = None) -> str:
+async def run(action: str, text: str | None = None) -> str:
     # 1) 参数校验：action 必填且只能是指定三种
     if action is None or str(action).strip() not in {"add", "list", "done"}:
         return "错误：action 必须是 add / list / done 之一"

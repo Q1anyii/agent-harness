@@ -1,6 +1,8 @@
 """Agent 运行时测试：循环、轮次限制、busy 拒绝、trace 记录。"""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from agent.llm import LLMClient, LLMResponse, MockLLM, ToolCall
@@ -67,7 +69,7 @@ def test_unknown_tool_returns_error_trace():
     mgr = SessionManager()
     s = _new_session(mgr)
     runtime = _make_runtime()
-    runtime._execute_tool("no_such_tool", {})
+    asyncio.run(runtime._execute_tool("no_such_tool", {}))
     result = runtime.run(s, "你好")
     assert result.reply
 

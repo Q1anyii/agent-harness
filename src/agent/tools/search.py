@@ -17,15 +17,15 @@ _TIMEOUT_SECONDS = HTTP_TIMEOUT_SECONDS
 _MAX_RESULTS = SEARCH_MAX_RESULTS
 
 
-def _fetch(query: str) -> list[dict] | None:
+async def _fetch(query: str) -> list[dict] | None:
     """抓取 DuckDuckGo HTML 搜索结果，解析出 标题/摘要；失败/超时返回 None。"""
     try:
-        resp = httpx.get(
-            f"https://html.duckduckgo.com/html/?q={query}",
-            timeout=_TIMEOUT_SECONDS,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+            resp = await client.get(
+                f"https://html.duckduckgo.com/html/?q={query}",
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            resp.raise_for_status()
     except httpx.HTTPError:
         return None
 
@@ -40,14 +40,14 @@ def _fetch(query: str) -> list[dict] | None:
     return results or None
 
 
-def run(query: str) -> str:
+async def run(query: str) -> str:
     # 1) 参数校验：空关键词直接报错
     if query is None or not str(query).strip():
         return "错误：搜索关键词为空"
     text = str(query).strip()
 
     # 2) 联网搜索：空列表或 None 都视为无结果
-    results = _fetch(text)
+    results = await _fetch(text)
     if not results:
         return f"搜索结果（联网）：未找到与「{text}」相关的内容，或网络暂时不可用"
 
