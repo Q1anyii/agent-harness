@@ -80,7 +80,7 @@ docker compose up -d --build
 
 架构分层：FastAPI（`src/main.py`，含全局中间件）→ Agent 运行时（`src/agent/`：runtime/router/session/llm/tools/context/events/memory/log）→ 存储抽象（内存 / SQLite 双实现）；前端 `frontend/`（会话列表 + 聊天框 + trace 面板 + localStorage 缓存兜底）。
 
-- 主循环四步流转与继续/终止判断；消息结构支持 OpenAI 兼容工具调用（tool_call_id 回显）；异步双轨（`async_run` + `asyncio.to_thread` 工具执行）
+- 主循环四步流转与继续/终止判断；消息结构支持 OpenAI 兼容工具调用（tool_call_id 回显）；唯一主循环为 `async_run`（工具 handler 全部 async，联网走 `httpx.AsyncClient`），同步 `run()` 仅为测试 / 脚本的薄包装
 - 工具注册表（参数 Schema + 安全校验，calculator 为 AST 白名单防注入）；search/weather 真实联网查询
 - LLM 后端切换：MockLLM（默认）与 DeepSeekLLM（真实），`LLM_BACKEND` 环境变量控制；assistant 消息携带 `reasoning` 思考过程
 - **流式事件**：`EventQueue` + `InMemoryQueue`（会话隔离 / 单调 seq），`GET /api/sessions/{id}/events?since=N` 轮询增量消费；前端 AI 消息块穿插式渲染 + 轮询锚点只消费本轮事件
