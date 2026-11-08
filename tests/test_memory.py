@@ -163,6 +163,50 @@ def test_async_run_extracted_via_llm():
     assert "Q:" not in hits[0].content
 
 
+def test_extractor_failure_degrades_to_raw_qa():
+    """提取器抛异常（真实 LLM 网络/超时）：回复照常返回、历史写回、降级存原始 QA。
+
+    回归 cover：此前 _remember_round 无异常兜底，提取失败会把整轮打成 500，
+    且 session.messages 尚未回写（reply 已推送）→ 前端看到回复、刷新后丢失。
+    """
+
+    class _BoomExtractor(MemoryExtractor):
+        def extract(self, existing, new_qa, recent_messages):
+            raise RuntimeError("LLM 网络错误")
+
+    mem = BM25Memory()
+    rt = AgentRuntime(
+        llm=_FakeLLM(), memory=mem, memory_extractor=_BoomExtractor(MockLLM())
+    )
+    s = Session(session_id="s1", created_at="t")
+    result = rt.run(s, "南昌天气如何")
+
+    assert result.reply == "南昌多云，20 度。"  # 主流程不被打断
+    assert s.messages                          # 历史确实写回
+    hits = mem.recall("南昌天气", k=5, session_id="s1")
+    assert len(hits) == 1                      # 提取失败 → 降级存原始 QA
+    assert "Q: 南昌天气如何" in hits[0].content
+
+
+def test_memory_recall_failure_does_not_break_round():
+    """记忆召回抛异常（build_messages 与 remember_round 两处调用）：整轮仍正常返回。"""
+
+    class _BrokenRecall(BM25Memory):
+        def recall(self, *args, **kwargs):
+            raise RuntimeError("召回炸了")
+
+    rt = AgentRuntime(
+        llm=_FakeLLM(),
+        memory=_BrokenRecall(),
+        memory_extractor=MemoryExtractor(MockLLM()),
+    )
+    s = Session(session_id="s1", created_at="t")
+    result = rt.run(s, "南昌天气如何")
+
+    assert result.reply == "南昌多云，20 度。"
+    assert s.messages
+
+
 class _FakeLLM:
     """固定直接回复的假 LLM（不发工具调用），专注记忆链路。"""
 

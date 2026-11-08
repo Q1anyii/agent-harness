@@ -29,6 +29,7 @@ LOG_LIST_LIMIT = 200  # 日志查询默认返回条数
 # ---- 外部请求 ----
 LLM_TIMEOUT_SECONDS = 60.0  # LLM 客户端超时
 HTTP_TIMEOUT_SECONDS = 10.0  # 联网工具请求超时
+TOOL_TIMEOUT_SECONDS = 10.0  # 单个工具执行总超时（asyncio.wait_for 兜底，防工具实现卡死整轮）
 SEARCH_MAX_RESULTS = 5  # 搜索结果条数上限
 
 # ---- 存储 / 服务 ----

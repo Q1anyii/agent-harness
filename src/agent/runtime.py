@@ -3,17 +3,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
 
-from agent.constants import MAX_CONTEXT_TOKENS, MAX_ROUNDS, MEMORY_RECALL_K
+from agent.constants import (
+    MAX_CONTEXT_TOKENS,
+    MAX_ROUNDS,
+    MEMORY_RECALL_K,
+    TOOL_TIMEOUT_SECONDS,
+)
 from agent.context import build_system_prompt, trim_messages
 from agent.events import EventQueue
 from agent.llm import LLMClient, LLMResponse
 from agent.memory import MemoryExtractor, MemoryStrategy
 from agent.session import Session, SessionBusyError
 from agent.tools import get_all_tools, get_tool
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -68,7 +76,13 @@ class AgentRuntime:
         # 拼入"本次请求"的 system（动态段，不写回缓存的 session.system_prompt）。
         # 短期窗口裁掉的历史信息可经此召回，形成"短期窗口 + 长期记忆"闭环。
         if self.memory:
-            hits = self.memory.recall(user_content, k=self.memory_recall_k, session_id=session.session_id)
+            try:
+                hits = self.memory.recall(
+                    user_content, k=self.memory_recall_k, session_id=session.session_id
+                )
+            except Exception:  # noqa: BLE001 - 记忆召回是增强项，失败按"无记忆"处理
+                logger.warning("长期记忆召回失败，本轮按无记忆处理", exc_info=True)
+                hits = []
             if hits:
                 memories_text = "\n".join(f"- {e.content}" for e in hits)
                 system += "\n\n【长期记忆（历史问答，仅供参考）】\n" + memories_text
@@ -167,7 +181,12 @@ class AgentRuntime:
 
             # 5b) 长期记忆落库（⑦）：有提取器则 LLM 提取自包含事实后逐条落库，
             #     否则直接存原始 QA。短期窗口裁掉的信息可经召回重新进入上下文。
-            await asyncio.to_thread(self._remember_round, session, user_content, reply)
+            #     记忆是弱一致性的附属功能：此处兜住一切异常，绝不阻断回复返回与历史
+            #     写回（reply 已推送、session.messages 尚未回写，抛错会把整轮打成 500）。
+            try:
+                await asyncio.to_thread(self._remember_round, session, user_content, reply)
+            except Exception:  # noqa: BLE001 - 兜底：记忆失败不影响本轮对话
+                logger.warning("记忆落库异常，本轮跳过", exc_info=True)
 
             # 6) 把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
             #    system prompt 是运行时注入的上下文，不写入对话历史（存储保持干净）
@@ -225,36 +244,63 @@ class AgentRuntime:
         - P2 LLM 提取：从「已有记忆 + 最近消息 + 本轮 QA」提取自包含事实；
         - P4/P5 去重：BM25Memory.remember 内 md5 去重，完全重复不重复入库。
         未配置提取器时直接存原始 QA（兼容既有行为）。
+
+        记忆是**弱一致性的附属功能**（对齐 Mitta「优化而非硬依赖」）：召回/提取/写入
+        任一环节失败都降级跳过，绝不向主流程抛异常——此处在 reply 已推送、
+        session.messages 尚未回写的窗口内，抛错会把整轮打成 500 且历史丢失。
         """
         if not self.memory:
             return
         qa = f"Q: {user_content}\nA: {reply}"
         if self.memory_extractor is None:
-            self.memory.remember(session.session_id, qa)
+            self._remember_safely(session.session_id, qa)
             return
-        existing = self.memory.recall(
-            user_content, k=5, session_id=session.session_id
-        )
+        try:
+            existing = self.memory.recall(
+                user_content, k=5, session_id=session.session_id
+            )
+        except Exception:  # noqa: BLE001 - 召回失败不阻断落库，按无已有记忆处理
+            logger.warning("记忆提取前召回失败，按无已有记忆处理", exc_info=True)
+            existing = []
         recent = [
             str(m.get("content", ""))
             for m in session.messages[-self.memory_extractor.recent_k:]
             if m.get("content")
         ]
-        facts = self.memory_extractor.extract(existing, qa, recent)
+        try:
+            facts = self.memory_extractor.extract(existing, qa, recent)
+        except Exception:  # noqa: BLE001 - LLM 提取失败（网络/超时）降级存原始 QA
+            logger.warning("记忆提取失败，降级存原始 QA", exc_info=True)
+            facts = [qa]
         for fact in facts:
-            self.memory.remember(session.session_id, fact)
+            self._remember_safely(session.session_id, fact)
+
+    def _remember_safely(self, session_id: str, content: str) -> None:
+        """单条记忆写入兜底：失败只记日志，不影响本轮回复与历史写回。"""
+        try:
+            self.memory.remember(session_id, content)
+        except Exception:  # noqa: BLE001 - 记忆写入是旁路，失败跳过该条
+            logger.warning("记忆写入失败，跳过该条", exc_info=True)
 
     @staticmethod
     async def _execute_tool(name: str, args: dict[str, str]) -> dict:
-        """执行单个工具：异常兜底 + 耗时记录（handler 为 async，直接 await）。"""
+        """执行单个工具：异常兜底 + 超时兜底 + 耗时记录（handler 为 async，直接 await）。"""
         start = time.perf_counter()
         tool = get_tool(name)
         try:
             if tool is None:
                 result, status = f"错误：未知工具「{name}」", "error"
             else:
-                # 工具 handler 是 async 函数，**args 展开参数字典后 await 调用
-                result, status = str(await tool.handler(**args)), "success"
+                # 工具 handler 是 async 函数，**args 展开参数字典后 await 调用；
+                # wait_for 兜住"工具实现卡死"（联网接口无响应等），超时转 error result
+                raw = await asyncio.wait_for(
+                    tool.handler(**args), timeout=TOOL_TIMEOUT_SECONDS
+                )
+                result, status = str(raw), "success"
+        except asyncio.TimeoutError:
+            result, status = (
+                f"错误：工具执行超时（超过 {TOOL_TIMEOUT_SECONDS:g}s）", "error"
+            )
         except TypeError as e:
             # 参数不匹配（缺参/多参/类型错）→ 记 error，不阻断循环
             result, status = f"错误：工具参数不匹配：{e}", "error"

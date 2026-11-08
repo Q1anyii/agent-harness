@@ -170,3 +170,27 @@ def test_rounds_used_counts_only_latest_user_tools():
     assert r2.rounds_used == 0
     r3 = runtime.run(s, "北京天气怎么样")
     assert r3.rounds_used == 1  # 不是累计 2
+
+
+def test_execute_tool_timeout_returns_error(monkeypatch):
+    """工具卡死（接口无响应）时由 wait_for 兜住：转 error result 回给 LLM，不卡住整轮。"""
+    import agent.runtime as runtime_mod
+    from agent.tools.base import TOOL_REGISTRY, Tool
+
+    async def _hang(city: str) -> str:
+        await asyncio.sleep(10)
+        return "never"
+
+    monkeypatch.setitem(
+        TOOL_REGISTRY,
+        "_hang",
+        Tool(name="_hang", description="测试用挂起工具", parameters={}, handler=_hang),
+    )
+    monkeypatch.setattr(runtime_mod, "TOOL_TIMEOUT_SECONDS", 0.05)
+
+    result = asyncio.run(
+        runtime_mod.AgentRuntime._execute_tool("_hang", {"city": "北京"})
+    )
+    assert result["status"] == "error"
+    assert "超时" in result["result"]
+    assert result["duration_ms"] < 1000  # 不是等满 10s
