@@ -15,7 +15,7 @@ A self-implementation agent harness project.
 - **context 管理**：轮次上限、短期记忆、追问路由；**窗口裁剪已实现**（token 估算 + `trim_messages`，上限 4000）+ 长期记忆召回；summary 摘要压缩待实现
 - **流式输出**：思考过程 / 工具调用 / 回复增量事件（`/api/.../events` 轮询）；前端 AI 消息块化渲染（思考可折叠 + 工具卡内嵌 + Markdown + 打字机）
 - **存储抽象**：`SessionStore` 抽象（内存 / SQLite 双实现），会话 / 消息 / trace 可落库持久化（`SESSION_STORE=sqlite`）
-- **健壮性**：工具级异常兜底（含联网工具网络失败兜底）+ 工具调用 trace（工具名/参数/结果/耗时）+ **全局中间件**（请求计时 / 未捕获异常 500 兜底不泄露堆栈 / 请求日志入库）
+- **健壮性**：工具级异常兜底（含联网工具网络失败兜底）+ **工具执行超时**（`asyncio.wait_for` 默认 10s，超时转 error 结果回给 LLM）+ **记忆链路异常隔离**（召回 / 提取 / 写入失败均降级，不阻断回复与历史写回）+ 工具调用 trace（工具名/参数/结果/耗时）+ **全局中间件**（请求计时 / 未捕获异常 500 兜底不泄露堆栈 / 请求日志入库）
 
 详细实现见 [docs/系统设计.md](docs/系统设计.md)。
 
@@ -47,7 +47,7 @@ npm run dev   # 5173 端口，Vite proxy 将 /api 转发到 127.0.0.1:8000
 
 契约导出：`.venv/Scripts/python.exe scripts/export_api.py` → `api.json`（OpenAPI 3.0.3）。
 
-测试：`.venv/Scripts/python.exe -m pytest`（170 passed，实测；联网工具与真实 LLM 路径通过 monkeypatch 离线验证）。
+测试：`.venv/Scripts/python.exe -m pytest`（175 passed，实测；联网工具与真实 LLM 路径通过 monkeypatch 离线验证）。
 
 > 注 1：Windows 端口处于 Hyper-V/WSL2 保留段（7449-8248）会报 WinError 10013，用 `$env:PORT=18000` 换端口。
 > 注 2：`.env` 若配置了 `SESSION_STORE=sqlite` / `LLM_BACKEND=deepseek`，直接跑 pytest 会因环境读入导致部分用例失败；请先覆盖：
@@ -96,7 +96,7 @@ docker compose up -d --build
 
 - **召回时机**：每轮提问时，runtime 以本轮 user 消息为 query，经 `BM25Memory` 召回 top-k（默认 10）历史事实，随本轮请求交给 LLM；命中条目的 `access_count` 递增，按 `decay_factor^access_count` 乘法衰减抑制热门记忆霸榜
 - **放置方式**：拼在 system 之后、以「【长期记忆（历史问答，仅供参考）】」段注入本次上下文，**不写回** `session.system_prompt`（静态 base 不被污染）
-- **落库时机与管线**：每轮 QA 完成后经 `MemoryExtractor`（对齐 mem0/Mitta 写入管线）由 LLM 从「已有记忆 + 最近消息 + 本轮 QA」提取自包含事实、md5 去重后逐条落库；指代（如"那南昌呢"承接上文）在提取阶段消解；解析失败降级为原始 QA 单条
+- **落库时机与管线**：每轮 QA 完成后经 `MemoryExtractor`（对齐 mem0/Mitta 写入管线）由 LLM 从「已有记忆 + 最近消息 + 本轮 QA」提取自包含事实、md5 去重后逐条落库；指代（如"那南昌呢"承接上文）在提取阶段消解；解析失败降级为原始 QA 单条；**LLM 调用失败 / 召回失败 / 写入失败一律降级跳过**（记忆是弱一致性的附属功能，任何一环出问题都不影响本轮回复返回与历史写回）
 
 实现：`src/agent/memory.py` 提供插件化 `MemoryStrategy` 抽象 + `BM25Memory`（Okapi BM25 k1=1.5/b=0.75，CJK 单字+英文按词切分）；当前为内存实现，未来可换 SQLite / 向量库。详见 [docs/系统设计.md](docs/系统设计.md) 与 `docs/devlog/`。
 
