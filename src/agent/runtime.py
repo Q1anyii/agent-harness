@@ -179,18 +179,13 @@ class AgentRuntime:
             # 5a) 流式输出：最终回复切成增量块入队（前端逐块渲染，done 标记收尾）
             self._publish_reply(session.session_id, reply)
 
-            # 5b) 长期记忆落库（⑦）：有提取器则 LLM 提取自包含事实后逐条落库，
-            #     否则直接存原始 QA。短期窗口裁掉的信息可经召回重新进入上下文。
-            #     记忆是弱一致性的附属功能：此处兜住一切异常，绝不阻断回复返回与历史
-            #     写回（reply 已推送、session.messages 尚未回写，抛错会把整轮打成 500）。
-            try:
-                await asyncio.to_thread(self._remember_round, session, user_content, reply)
-            except Exception:  # noqa: BLE001 - 兜底：记忆失败不影响本轮对话
-                logger.warning("记忆落库异常，本轮跳过", exc_info=True)
-
-            # 6) 把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
+            # 5b) 立刻把最终回复追加为 assistant 消息并写回会话（历史持久化到 session）
             #    system prompt 是运行时注入的上下文，不写入对话历史（存储保持干净）
             #    带上最后一轮 reasoning：思考过程随最终回复一并落库（⑥ 全量刷新后仍在）
+            #    紧跟推送执行：让"对外已可见"与"内部已持久"立刻对齐——前端收到 done
+            #    后往往立刻追问，若此刻历史还没写回，下一轮读到的上下文就缺了本轮回复
+            history_snapshot = list(session.messages)  # 本轮回复写入前的历史，供记忆提取消解指代
+
             reply_msg: dict = {"role": "assistant", "content": reply}
             if last_reasoning:
                 reply_msg["reasoning"] = last_reasoning
@@ -198,7 +193,26 @@ class AgentRuntime:
             session.messages = [m for m in messages if m.get("role") != "system"]
             session.traces.extend(trace)
 
-            # 7) 工具调用次数 = 最近一条 user 消息之后出现的 tool 消息数，
+            # 5c) 本轮对话到此结束：立刻释放会话。state 兼作并发互斥，语义是"本轮问答
+            #     是否还在生产"，与记忆有没有落完无关——记忆是旁路，不该让会话继续 busy
+            #     （否则前端已收到 done、追问却被 SessionBusyError 拒掉）。
+            #     记忆跑在线程池里，下一轮的提取会与它并行：BM25Memory 只有 list append
+            #     与推导遍历，不抛 RuntimeError，最坏是去重同时通过导致轻微重复入库，
+            #     属于弱一致可接受的代价，故不加锁。
+            session.state = "idle"
+
+            # 5d) 长期记忆落库（⑦）：有提取器则 LLM 提取自包含事实后逐条落库，
+            #     否则直接存原始 QA。短期窗口裁掉的信息可经召回重新进入上下文。
+            #     记忆是弱一致性的附属功能，排在推送与历史写回之后：任一环节失败
+            #     都只记日志，不影响已推送的回复、已写回的历史与已释放的会话。
+            try:
+                await asyncio.to_thread(
+                    self._remember_round, session, user_content, reply, history_snapshot
+                )
+            except Exception:  # noqa: BLE001 - 兜底：记忆失败不影响本轮对话
+                logger.warning("记忆落库异常，本轮跳过", exc_info=True)
+
+            # 6) 工具调用次数 = 最近一条 user 消息之后出现的 tool 消息数，
             #    即本次问答实际执行的工具条数（历史会话中的工具调用不计入）。
             last_user_idx = max(i for i, m in enumerate(messages) if m.get("role") == "user")
             tool_calls_used = sum(
@@ -211,7 +225,7 @@ class AgentRuntime:
                 max_rounds=self.max_rounds,
             )
         finally:
-            # 8) 无论成功失败都复位会话状态，保证会话可复用
+            # 7) 无论成功失败都复位会话状态，保证会话可复用
             session.state = "idle"
 
     @staticmethod
@@ -235,7 +249,13 @@ class AgentRuntime:
                 "done": i == len(chunks) - 1,
             })
 
-    def _remember_round(self, session: Session, user_content: str, reply: str) -> None:
+    def _remember_round(
+        self,
+        session: Session,
+        user_content: str,
+        reply: str,
+        history_snapshot: list[dict] | None = None,
+    ) -> None:
         """长期记忆落库（⑦）：LLM 提取自包含事实后逐条落库。
 
         写入管线对齐 mem0（MEM0_DEEP_DIVE.md §1）：
@@ -245,9 +265,14 @@ class AgentRuntime:
         - P4/P5 去重：BM25Memory.remember 内 md5 去重，完全重复不重复入库。
         未配置提取器时直接存原始 QA（兼容既有行为）。
 
+        history_snapshot 是「本轮回复写入前」的历史快照：调用点已先把回复写回会话
+        （保证推送与持久对齐），不传快照时最近消息切片会把本轮回复也取进来——既与
+        qa 里的 A 重复，又挤掉一条真正的上文。
+
         记忆是**弱一致性的附属功能**（对齐 Mitta「优化而非硬依赖」）：召回/提取/写入
-        任一环节失败都降级跳过，绝不向主流程抛异常——此处在 reply 已推送、
-        session.messages 尚未回写的窗口内，抛错会把整轮打成 500 且历史丢失。
+        任一环节失败都降级跳过，绝不向主流程抛异常。它排在本轮回复推送、历史写回与
+        会话释放之后，失败只影响记忆自身；与下一轮的记忆提取在线程池里并行执行，
+        不加锁（BM25Memory 只有 list 追加与推导遍历，最坏是轻微重复入库）。
         """
         if not self.memory:
             return
@@ -262,9 +287,12 @@ class AgentRuntime:
         except Exception:  # noqa: BLE001 - 召回失败不阻断落库，按无已有记忆处理
             logger.warning("记忆提取前召回失败，按无已有记忆处理", exc_info=True)
             existing = []
+        recent_source = (
+            history_snapshot if history_snapshot is not None else session.messages
+        )
         recent = [
             str(m.get("content", ""))
-            for m in session.messages[-self.memory_extractor.recent_k:]
+            for m in recent_source[-self.memory_extractor.recent_k:]
             if m.get("content")
         ]
         try:
