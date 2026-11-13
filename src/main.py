@@ -152,6 +152,9 @@ runtime = AgentRuntime(
     memory=memory,
     memory_extractor=memory_extractor,
     max_context_tokens=MAX_CONTEXT_TOKENS,
+    # 注入会话仓储：互斥走存储层原子抢占（SQLite 模式跨请求可靠），
+    # 历史在写回后立刻增量落库，下一轮 get() 不会读到缺回复的旧历史
+    sessions=manager,
 )
 
 
@@ -214,9 +217,8 @@ async def send_message(session_id: str, req: ChatRequest) -> dict:
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="会话不存在")
     try:
+        # 历史已在 runtime 写回后立刻增量落库（sqlite 模式），此处不再重复全量写
         result = await runtime.async_run(s, req.content)
-        # 存储层持久化（memory 实现为 no-op；sqlite 模式落库消息/trace/状态）
-        manager.save(s)
     except SessionBusyError:
         raise HTTPException(status_code=409, detail="会话正忙，请稍后重试")
     return {

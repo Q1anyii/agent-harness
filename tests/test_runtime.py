@@ -194,3 +194,53 @@ def test_execute_tool_timeout_returns_error(monkeypatch):
     assert result["status"] == "error"
     assert "超时" in result["result"]
     assert result["duration_ms"] < 1000  # 不是等满 10s
+
+
+# ---------- 存储层互斥（注入 sessions 的路径） ----------
+
+def test_runtime_with_store_releases_after_run():
+    """注入 store 后，正常结束由 store 释放，会话可再次抢占。"""
+    mgr = SessionManager()
+    s = mgr.create()
+    runtime = AgentRuntime(llm=MockLLM(), sessions=mgr)
+    runtime.run(s, "你好")
+    assert s.state == "idle"
+    assert mgr.try_acquire(s.session_id) is True
+
+
+def test_runtime_with_store_rejects_busy():
+    """已抢占的会话，第二次请求必须被 SessionBusyError 拒绝。"""
+    mgr = SessionManager()
+    s = mgr.create()
+    mgr.try_acquire(s.session_id)
+    runtime = AgentRuntime(llm=MockLLM(), sessions=mgr)
+    with pytest.raises(SessionBusyError):
+        runtime.run(s, "又来一条")
+
+
+def test_runtime_releases_on_exception():
+    """异常逃逸时 finally 必须释放，否则会话永久 busy。"""
+    class BoomLLM(MockLLM):
+        async def async_generate(self, messages):
+            raise RuntimeError("boom")
+
+    mgr = SessionManager()
+    s = mgr.create()
+    runtime = AgentRuntime(llm=BoomLLM(), sessions=mgr)
+    with pytest.raises(RuntimeError):
+        runtime.run(s, "触发异常")
+    assert s.state == "idle"
+    assert mgr.try_acquire(s.session_id) is True
+
+
+def test_runtime_saves_history_immediately(tmp_path):
+    """写回后立刻增量落库：另起实例 get() 能读到本轮回复（模拟下一次请求）。"""
+    from agent.session import SQLiteSessionStore
+
+    store = SQLiteSessionStore(str(tmp_path / "s.db"))
+    s = store.create()
+    runtime = AgentRuntime(llm=MockLLM(), sessions=store)
+    runtime.run(s, "你好")
+    got = store.get(s.session_id)
+    assert any(m["role"] == "assistant" and m["content"] for m in got.messages)
+    assert got.state == "idle"

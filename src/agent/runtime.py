@@ -18,7 +18,7 @@ from agent.context import build_system_prompt, trim_messages
 from agent.events import EventQueue
 from agent.llm import LLMClient, LLMResponse
 from agent.memory import MemoryExtractor, MemoryStrategy
-from agent.session import Session, SessionBusyError
+from agent.session import Session, SessionBusyError, SessionStore
 from agent.tools import get_all_tools, get_tool
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,8 @@ class AgentRuntime:
                  queue: EventQueue | None = None,
                  memory: MemoryStrategy | None = None,
                  memory_recall_k: int = MEMORY_RECALL_K,
-                 memory_extractor: MemoryExtractor | None = None) -> None:
+                 memory_extractor: MemoryExtractor | None = None,
+                 sessions: SessionStore | None = None) -> None:
         self.llm = llm
         self.max_rounds = max_rounds
         # context 窗口上限：估算 token 超限时从最旧裁剪（见 agent/context.py）
@@ -61,6 +62,26 @@ class AgentRuntime:
         # 落库层 LLM 提取器（⑦）：配置后每轮 QA 先经 LLM 提取自包含事实再落库，
         # 指代（"那南昌呢"承接上文）由提取上下文消解；不配则直接存原始 QA。
         self.memory_extractor = memory_extractor
+        # 会话仓储（可选）：注入后互斥与落库都走存储层（SQLite 模式跨请求可靠）；
+        # 不注入则退化为 Session.state 内存判断 + 不落库（既有测试零影响）。
+        self.sessions = sessions
+
+    def _acquire(self, session: Session) -> None:
+        """抢占会话：存储层原子 CAS 优先，未注入 store 时退化为内存 state 判断。"""
+        if self.sessions is not None:
+            if not self.sessions.try_acquire(session.session_id):
+                raise SessionBusyError("会话正忙，请等上一条消息处理完成")
+            session.state = "busy"  # 内存副本同步（列表接口展示用）
+            return
+        if session.state != "idle":
+            raise SessionBusyError("会话正忙，请等上一条消息处理完成")
+        session.state = "busy"
+
+    def _release(self, session: Session) -> None:
+        """释放会话：store 实现负责持久化，内存副本同步（幂等）。"""
+        if self.sessions is not None:
+            self.sessions.release(session.session_id)
+        session.state = "idle"
 
     def _build_messages(self, session: Session, user_content: str) -> list[dict]:
         """构造发给 LLM 的消息列表：system prompt（会话级，首次构造后复用）
@@ -100,10 +121,11 @@ class AgentRuntime:
         return asyncio.run(self.async_run(session, user_content))
 
     async def async_run(self, session: Session, user_content: str) -> AgentResult:
-        # 0) 会话忙时拒绝新消息，避免并发覆盖状态（对应架构题模块四第 2 问）
-        if session.state != "idle":
-            raise SessionBusyError("会话正忙，请等上一条消息处理完成")
-        session.state = "busy"
+        # 0) 会话忙时拒绝新消息（对应架构题模块四第 2 问）。注入 sessions 时走
+        #    存储层原子抢占：SQLite 模式下每次 get() 都是新对象，靠内存 state 判断
+        #    会让两个请求双双放行；未注入则退化为内存判断（既有测试路径）。
+        self._acquire(session)
+        released = False
         try:
             # 1) 复制会话历史（不污染原列表），并把本轮用户输入追加为 user 消息
             messages: list[dict] = self._build_messages(session, user_content)
@@ -193,13 +215,18 @@ class AgentRuntime:
             session.messages = [m for m in messages if m.get("role") != "system"]
             session.traces.extend(trace)
 
-            # 5c) 本轮对话到此结束：立刻释放会话。state 兼作并发互斥，语义是"本轮问答
+            # 5c) 历史立刻落库：SQLite 模式下 get() 从库重建，若等 endpoint 收尾再 save，
+            #     下一轮请求可能读到"缺本轮回复"的历史。增量写入，成本只与新增条数相关。
+            if self.sessions is not None:
+                self.sessions.save(session)
+
+            # 5d) 本轮对话到此结束：立刻释放会话。state 兼作并发互斥，语义是"本轮问答
             #     是否还在生产"，与记忆有没有落完无关——记忆是旁路，不该让会话继续 busy
-            #     （否则前端已收到 done、追问却被 SessionBusyError 拒掉）。
-            #     记忆跑在线程池里，下一轮的提取会与它并行：BM25Memory 只有 list append
-            #     与推导遍历，不抛 RuntimeError，最坏是去重同时通过导致轻微重复入库，
-            #     属于弱一致可接受的代价，故不加锁。
-            session.state = "idle"
+            #     （否则前端已收到 done、追问却被 409 拒掉）。
+            #     release 后紧跟 released=True（中间无 await），正常路径不会把下一轮
+            #     刚抢到的持有权误放掉。
+            self._release(session)
+            released = True
 
             # 5d) 长期记忆落库（⑦）：有提取器则 LLM 提取自包含事实后逐条落库，
             #     否则直接存原始 QA。短期窗口裁掉的信息可经召回重新进入上下文。
@@ -225,8 +252,10 @@ class AgentRuntime:
                 max_rounds=self.max_rounds,
             )
         finally:
-            # 7) 无论成功失败都复位会话状态，保证会话可复用
-            session.state = "idle"
+            # 7) 异常路径兜底：未走到正常释放的异常（LLM 报错、工具异常逃逸等）
+            #    必须把会话放回 idle，否则该会话会永久 busy、后续消息持续 409。
+            if not released:
+                self._release(session)
 
     @staticmethod
     def _chunk_text(text: str, size: int = 24) -> list[str]:
