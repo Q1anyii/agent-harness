@@ -111,3 +111,55 @@ def test_memory_manager_implements_store_interface():
     mgr.save(s)  # no-op，不抛错
     assert mgr.get(s.session_id).messages[0]["content"] == "hi"
     assert isinstance(mgr, object)  # 占位断言：接口方法全部可调用即可
+
+
+# ---------- 并发互斥：存储层原子抢占（CAS） ----------
+
+def test_try_acquire_is_exclusive(store):
+    """同一会话同一时刻只能被一个请求抢到（SQLite CAS）。"""
+    s = store.create()
+    assert store.try_acquire(s.session_id) is True
+    assert store.try_acquire(s.session_id) is False  # 第二个请求被拒
+    store.release(s.session_id)
+    assert store.try_acquire(s.session_id) is True   # 释放后可再抢
+
+
+def test_try_acquire_unknown_raises(store):
+    with pytest.raises(SessionNotFoundError):
+        store.try_acquire("no_such_session")
+
+
+def test_release_unknown_is_noop(store):
+    store.release("no_such_session")  # 幂等兜底，不抛
+
+
+def test_save_incremental_only_appends_new_rows(store):
+    """增量落库：第二次 save 只追加新增行，不重建、不翻倍。"""
+    s = store.create()
+    s.messages = [{"role": "user", "content": "一"}]
+    s.traces = [{"tool": "calculator", "args": {}, "result": "1", "status": "success"}]
+    store.save(s)
+    s.messages.append({"role": "assistant", "content": "一答"})
+    s.traces.append(
+        {"tool": "weather", "args": {"city": "北京"}, "result": "晴", "status": "success"}
+    )
+    store.save(s)
+    got = store.get(s.session_id)
+    assert [m["content"] for m in got.messages] == ["一", "一答"]
+    assert [t["tool"] for t in got.traces] == ["calculator", "weather"]
+
+
+def test_manager_try_acquire_is_exclusive():
+    """内存实现的 CAS 等价物：锁内判断 state 再置 busy。"""
+    mgr = SessionManager()
+    s = mgr.create()
+    assert mgr.try_acquire(s.session_id) is True
+    assert s.state == "busy"
+    assert mgr.try_acquire(s.session_id) is False
+    mgr.release(s.session_id)
+    assert s.state == "idle"
+
+
+def test_manager_try_acquire_unknown_raises():
+    with pytest.raises(SessionNotFoundError):
+        SessionManager().try_acquire("no_such_session")
