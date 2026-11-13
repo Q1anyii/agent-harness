@@ -12,7 +12,7 @@ A self-implementation agent harness project.
 - **工具注册**：name / description / 参数 Schema（JSON Schema）；内置 `calculator`（安全求值）、`search`（联网 DuckDuckGo）、`weather`（联网 wttr.in）、`todo`（待办 add/list/done）
 - **LLM 输出解析**：思考/工具调用/最终答案三类；默认 MockLLM（规则式），可选 DeepSeekLLM 真实接入（`LLM_BACKEND=deepseek`，OpenAI-compatible 工具调用）
 - **session 管理**：多会话隔离、可续聊、删除会话、列表空自动建默认会话、会话忙保护（HTTP 409）
-- **context 管理**：轮次上限、短期记忆、追问路由；**窗口裁剪已实现**（token 估算 + `trim_messages`，上限 4000）+ 长期记忆召回；summary 摘要压缩待实现
+- **context 管理**：轮次上限、短期记忆、追问路由；**窗口裁剪已实现**（token 估算 + `trim_messages`，上限 16k）+ 长期记忆召回；summary 摘要压缩待实现
 - **流式输出**：思考过程 / 工具调用 / 回复增量事件（`/api/.../events` 轮询）；前端 AI 消息块化渲染（思考可折叠 + 工具卡内嵌 + Markdown + 打字机）
 - **存储抽象**：`SessionStore` 抽象（内存 / SQLite 双实现），会话 / 消息 / trace 可落库持久化（`SESSION_STORE=sqlite`）
 - **健壮性**：工具级异常兜底（含联网工具网络失败兜底）+ **工具执行超时**（`asyncio.wait_for` 默认 10s，超时转 error 结果回给 LLM）+ **记忆链路异常隔离**（召回 / 提取 / 写入失败均降级，不阻断回复与历史写回）+ 工具调用 trace（工具名/参数/结果/耗时）+ **全局中间件**（请求计时 / 未捕获异常 500 兜底不泄露堆栈 / 请求日志入库）
